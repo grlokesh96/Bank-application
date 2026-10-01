@@ -94,16 +94,16 @@ emit() {
 svc_include=""
 for s in $(lines_of "$GO_SVC") $(lines_of "$NODE_SVC"); do
   [ -n "$s" ] || continue
-  svc_include+="${svc_include:+,}{\"service\":\"$(jstr "$s")\",\"name\":\"$(jstr "${s##*/}")\"}"
+  svc_include+="${svc_include:+,}{\"dir\":\"$(jstr "$s")\",\"name\":\"$(jstr "${s##*/}")\"}"
 done
-emit 'services_matrix={"service":{"include":[%s]}}\n' "$svc_include"
+emit 'services_matrix={"include":[%s]}\n' "$svc_include"
 
 node_include=""
 for s in $(lines_of "$NODE_SVC"); do
   [ -n "$s" ] || continue
-  node_include+="${node_include:+,}{\"service\":\"$(jstr "$s")\",\"name\":\"$(jstr "${s##*/}")\"}"
+  node_include+="${node_include:+,}{\"dir\":\"$(jstr "$s")\",\"name\":\"$(jstr "${s##*/}")\"}"
 done
-emit 'node_matrix={"node":{"include":[%s]}}\n' "$node_include"
+emit 'node_matrix={"include":[%s]}\n' "$node_include"
 
 df_include=""
 for df in $(lines_of "$DOCKERFILES"); do
@@ -113,7 +113,7 @@ for df in $(lines_of "$DOCKERFILES"); do
   label="${df//\//_}"
   df_include+="${df_include:+,}{\"file\":\"$(jstr "$df")\",\"label\":\"$(jstr "$label")\",\"services\":\"$(jstr "$svcs")\",\"count\":$n}"
 done
-emit 'hadolint_matrix={"dockerfile":{"include":[%s]}}\n' "$df_include"
+emit 'hadolint_matrix={"include":[%s]}\n' "$df_include"
 
 # CodeQL: only run the languages that actually exist in the repository, and pair
 # each with a build mode the extractor supports.
@@ -128,7 +128,7 @@ if [ -d .github/workflows ] && find .github/workflows -maxdepth 1 \
   \( -name '*.yml' -o -name '*.yaml' \) -print -quit 2>/dev/null | grep -q .; then
   cql+="${cql:+,}{\"language\":\"actions\",\"build_mode\":\"none\",\"name\":\"github-actions\"}"
 fi
-emit 'codeql_matrix={"codeql":{"include":[%s]}}\n' "$cql"
+emit 'codeql_matrix={"include":[%s]}\n' "$cql"
 
 # --- 6. Human-readable outputs + counts ------------------------------------
 emit 'go_services=%s\n'     "$GO_COUNT"  

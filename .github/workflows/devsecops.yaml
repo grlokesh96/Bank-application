@@ -94,7 +94,7 @@ jobs:
             value="${!name}"
             bytes="$(printf '%s' "$value" | wc -c)"
             entries="$(printf '%s' "$value" \
-              | jq -r 'to_entries[0].value | .include | length' 2>/dev/null || echo invalid)"
+              | jq -r '.include | length' 2>/dev/null || echo invalid)"
             echo "::group::$name"
             echo "bytes   : $bytes"
             echo "entries : $entries"
@@ -209,13 +209,12 @@ jobs:
   #    linted once and reported with the number of services it covers.
   # ===========================================================================
   hadolint:
-    name: 5. Hadolint (${{ matrix.dockerfile.label }})
+    name: 5. Hadolint (${{ matrix.label }})
     runs-on: ubuntu-latest
     needs: [sca-owasp, discover-services]
     strategy:
       fail-fast: false # report every Dockerfile, not just the first failure
-      matrix:
-        dockerfile: ${{ fromJSON(needs.discover-services.outputs.hadolint_matrix).dockerfile }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.hadolint_matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -223,15 +222,15 @@ jobs:
       - name: Report coverage
         run: |
           echo "::group::Dockerfile under review"
-          echo "file      : ${{ matrix.dockerfile.file }}"
-          echo "consumers : ${{ matrix.dockerfile.count }} service(s)"
+          echo "file      : ${{ matrix.file }}"
+          echo "consumers : ${{ matrix.count }} service(s)"
           echo "::endgroup::"
 
       - name: Hadolint
         id: lint
         uses: hadolint/hadolint-action@v3.1.0
         with:
-          dockerfile: ${{ matrix.dockerfile.file }}
+          dockerfile: ${{ matrix.file }}
           # `info` findings stay visible in the log without failing the build.
           failure-threshold: ${{ env.HADOLINT_THRESHOLD }}
           # Reads .hadolint.yaml (ignored: DL3059, trusted registries).
@@ -240,8 +239,8 @@ jobs:
       - name: Annotate result
         if: always()
         env:
-          FILE: ${{ matrix.dockerfile.file }}
-          COUNT: ${{ matrix.dockerfile.count }}
+          FILE: ${{ matrix.file }}
+          COUNT: ${{ matrix.count }}
           OUTCOME: ${{ steps.lint.outcome }}
         run: |
           if [ "$COUNT" -gt 0 ]; then
@@ -258,7 +257,7 @@ jobs:
   #    while JavaScript/TypeScript and workflow files are analysed as-is.
   # ===========================================================================
   codeql:
-    name: 6. CodeQL (${{ matrix.codeql.name }})
+    name: 6. CodeQL (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [sca-owasp, discover-services]
     permissions:
@@ -267,8 +266,7 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      matrix:
-        codeql: ${{ fromJSON(needs.discover-services.outputs.codeql_matrix).codeql }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.codeql_matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -276,34 +274,33 @@ jobs:
       # Autobuild shells out to the Go toolchain, so pin the version the repo
       # asks for (go.work) rather than whatever the runner image ships.
       - name: Set up Go toolchain
-        if: matrix.codeql.language == 'go'
+        if: matrix.language == 'go'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.work
           cache: false
 
-      - name: Initialize CodeQL (${{ matrix.codeql.language }})
+      - name: Initialize CodeQL (${{ matrix.language }})
         uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.codeql.language }}
-          build-mode: ${{ matrix.codeql.build_mode }}
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build_mode }}
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: /language:${{ matrix.codeql.language }}
+          category: /language:${{ matrix.language }}
 
   # ===========================================================================
   # 7. ESLint — one matrix job per Node.js service (JS/TS/JSX).
   # ===========================================================================
   eslint:
-    name: 7. ESLint (${{ matrix.node.name }})
+    name: 7. ESLint (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [sca-owasp, discover-services]
     strategy:
       fail-fast: false
-      matrix:
-        node: ${{ fromJSON(needs.discover-services.outputs.node_matrix).node }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.node_matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -316,12 +313,12 @@ jobs:
         run: |
           # Distinct appends to two different files, deliberately separate.
           # shellcheck disable=SC2129
-          if [ -f "${{ matrix.node.service }}/package-lock.json" ]; then
+          if [ -f "${{ matrix.dir }}/package-lock.json" ]; then
             echo "lock=true" >> "$GITHUB_OUTPUT"
             echo "Lockfile present — installing with \`npm ci\`." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "lock=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No package-lock.json in ${{ matrix.node.service }} — falling back to npm install."
+            echo "::warning::No package-lock.json in ${{ matrix.dir }} — falling back to npm install."
           fi
 
       - name: Set up Node.js
@@ -329,35 +326,35 @@ jobs:
         with:
           node-version: 20
           cache: ${{ steps.meta.outputs.lock }}
-          cache-dependency-path: ${{ matrix.node.service }}/package-lock.json
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
 
       - name: Install dependencies
         if: steps.meta.outputs.lock == 'true'
-        working-directory: ${{ matrix.node.service }}
+        working-directory: ${{ matrix.dir }}
         run: npm ci --no-audit --no-fund
 
       - name: Install dependencies (no lockfile)
         if: steps.meta.outputs.lock != 'true'
-        working-directory: ${{ matrix.node.service }}
+        working-directory: ${{ matrix.dir }}
         run: npm install --no-audit --no-fund
 
       - name: Run ESLint
         id: lint
-        working-directory: ${{ matrix.node.service }}
+        working-directory: ${{ matrix.dir }}
         run: |
           if [ -f package.json ] && node -e \
             'process.exit(require("./package.json").scripts?.lint ? 0 : 1)'; then
             npm run lint
           else
             # No lint script yet — lint with the project's config directly.
-            echo "No 'lint' script in ${{ matrix.node.service }}/package.json; running eslint directly."
+            echo "No 'lint' script in ${{ matrix.dir }}/package.json; running eslint directly."
             npx --no-install eslint .
           fi
 
       - name: Summarise
         if: always()
         env:
-          SERVICE: ${{ matrix.node.service }}
+          SERVICE: ${{ matrix.dir }}
           OUTCOME: ${{ steps.lint.outcome }}
         run: |
           {
@@ -371,13 +368,12 @@ jobs:
   #    Matrix is injected from discovery, so new services build automatically.
   # ===========================================================================
   build:
-    name: 8. Build (${{ matrix.service.name }})
+    name: 8. Build (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [discover-services, hadolint, codeql, eslint]
     strategy:
       fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -391,17 +387,17 @@ jobs:
       - name: Resolve build inputs
         id: img
         run: |
-          if [ -f "${{ matrix.service.service }}/Dockerfile" ]; then
+          if [ -f "${{ matrix.dir }}/Dockerfile" ]; then
             {
-              echo "context=./${{ matrix.service.service }}"
-              echo "dockerfile=./${{ matrix.service.service }}/Dockerfile"
+              echo "context=./${{ matrix.dir }}"
+              echo "dockerfile=./${{ matrix.dir }}/Dockerfile"
               echo "buildargs="
             } >> "$GITHUB_OUTPUT"
           else
             {
               echo "context=."
               echo "dockerfile=build/service.Dockerfile"
-              echo "buildargs=SERVICE=${{ matrix.service.name }}"
+              echo "buildargs=SERVICE=${{ matrix.name }}"
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -416,31 +412,30 @@ jobs:
           build-args: ${{ steps.img.outputs.buildargs }}
           push: false
           load: true
-          tags: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
-          cache-from: type=gha,scope=${{ matrix.service.name }}
-          cache-to: type=gha,scope=${{ matrix.service.name }},mode=max
+          tags: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
 
       - name: Archive image
-        run: docker save ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }} | gzip > /tmp/${{ matrix.service.name }}.tar.gz
+        run: docker save ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }} | gzip > /tmp/${{ matrix.name }}.tar.gz
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: image-${{ matrix.service.name }}
-          path: /tmp/${{ matrix.service.name }}.tar.gz
+          name: image-${{ matrix.name }}
+          path: /tmp/${{ matrix.name }}.tar.gz
           retention-days: 7
 
   # ===========================================================================
   # 9. Image scan & SBOM — Trivy image scan (gate) + CycloneDX SBOM artifact
   # ===========================================================================
   image-scan-sbom:
-    name: 9. Image scan & SBOM (${{ matrix.service.name }})
+    name: 9. Image scan & SBOM (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [build, discover-services]
     strategy:
       fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
     steps:
       - name: Compute short SHA
         id: vars
@@ -449,17 +444,17 @@ jobs:
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
-          name: image-${{ matrix.service.name }}
+          name: image-${{ matrix.name }}
           path: /tmp/img
 
       - name: Load image
-        run: docker load -i /tmp/img/${{ matrix.service.name }}.tar.gz
+        run: docker load -i /tmp/img/${{ matrix.name }}.tar.gz
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
+          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
           format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -469,17 +464,17 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
+          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
           format: cyclonedx
-          output: sbom-${{ matrix.service.name }}.cdx.json
+          output: sbom-${{ matrix.name }}.cdx.json
           skip-setup-trivy: true
 
       - name: Upload SBOM
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.service.name }}
-          path: sbom-${{ matrix.service.name }}.cdx.json
+          name: sbom-${{ matrix.name }}
+          path: sbom-${{ matrix.name }}.cdx.json
           retention-days: 7
 
   # ===========================================================================
@@ -487,14 +482,13 @@ jobs:
   #     Runs only after every scan passes, on main pushes / manual runs.
   # ===========================================================================
   push-image:
-    name: 10. Push image (${{ matrix.service.name }})
+    name: 10. Push image (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [image-scan-sbom, discover-services]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
+      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
     steps:
       - name: Compute short SHA
         id: vars
@@ -503,11 +497,11 @@ jobs:
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
-          name: image-${{ matrix.service.name }}
+          name: image-${{ matrix.name }}
           path: /tmp/img
 
       - name: Load image
-        run: docker load -i /tmp/img/${{ matrix.service.name }}.tar.gz
+        run: docker load -i /tmp/img/${{ matrix.name }}.tar.gz
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -517,8 +511,8 @@ jobs:
 
       - name: Push image (sha + latest)
         env:
-          IMG: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
-          LATEST: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-latest
+          IMG: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          LATEST: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-latest
         run: |
           docker tag "$IMG" "$LATEST"
           docker push "$IMG"
