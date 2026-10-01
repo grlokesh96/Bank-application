@@ -1,0 +1,23 @@
+# api-gateway — static Service manifest.
+#
+# Mirrors the Service in deploy/helm/banking-platform/templates/api-gateway.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: banking
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: NodePort
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080

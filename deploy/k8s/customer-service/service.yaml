@@ -1,0 +1,22 @@
+# customer-service — static Service manifest.
+#
+# Mirrors the Service in deploy/helm/banking-platform/templates/customer-service.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: banking
+  labels:
+    app: customer-service
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: customer-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,25 @@
+# account-service — static Service manifest.
+#
+# Mirrors the Service in deploy/helm/banking-platform/templates/account-service.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: banking
+  labels:
+    app: account-service
+    app.kubernetes.io/name: account-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: account-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 9090
+      targetPort: 9090

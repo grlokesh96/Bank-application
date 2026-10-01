@@ -1,0 +1,22 @@
+# transaction-service — static Service manifest.
+#
+# Mirrors the Service in deploy/helm/banking-platform/templates/transaction-service.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  namespace: banking
+  labels:
+    app: transaction-service
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

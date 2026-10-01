@@ -1,0 +1,61 @@
+# frontend — static Deployment manifest.
+#
+# Mirrors the Deployment in deploy/helm/banking-platform/templates/frontend.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+# The image tag is a placeholder. CI publishes
+# 118178010323.dkr.ecr.us-east-1.amazonaws.com/banking-platform:frontend-<sha>; patch the tag rather than editing the rest of this file.
+# nginx needs no secrets; it only serves static assets.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: banking
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8080'
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: frontend
+          image: 118178010323.dkr.ecr.us-east-1.amazonaws.com/banking-platform:frontend-latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: '8080'
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15

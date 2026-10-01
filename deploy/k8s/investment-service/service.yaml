@@ -1,0 +1,22 @@
+# investment-service — static Service manifest.
+#
+# Mirrors the Service in deploy/helm/banking-platform/templates/investment-service.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+apiVersion: v1
+kind: Service
+metadata:
+  name: investment-service
+  namespace: banking
+  labels:
+    app: investment-service
+    app.kubernetes.io/name: investment-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: investment-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

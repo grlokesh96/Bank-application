@@ -1,0 +1,129 @@
+# fixed-deposit-service — static Deployment manifest.
+#
+# Mirrors the Deployment in deploy/helm/banking-platform/templates/fixed-deposit-service.yaml.
+# The Helm chart stays the GitOps source of truth (ArgoCD reconciles it);
+# these files are for `kubectl apply`, review, and local clusters.
+# The image tag is a placeholder. CI publishes
+# 118178010323.dkr.ecr.us-east-1.amazonaws.com/banking-platform:fixed-deposit-service-<sha>; patch the tag rather than editing the rest of this file.
+# Requires the 'banking-platform-secrets' Secret in namespace 'banking' with keys: POSTGRES_USER, POSTGRES_PASSWORD, JWT_SECRET, JWT_ISSUER.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixed-deposit-service-deployment
+  namespace: banking
+  labels:
+    app: fixed-deposit-service
+    app.kubernetes.io/name: fixed-deposit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixed-deposit-service
+  template:
+    metadata:
+      labels:
+        app: fixed-deposit-service
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8080'
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: fixed-deposit-service
+          image: 118178010323.dkr.ecr.us-east-1.amazonaws.com/banking-platform:fixed-deposit-service-latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: fixed-deposit-service
+            - name: ENVIRONMENT
+              value: development
+            - name: HTTP_PORT
+              value: '8080'
+            - name: LOG_LEVEL
+              value: info
+            - name: LOG_FORMAT
+              value: json
+            - name: POSTGRES_ENABLED
+              value: 'true'
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: '5432'
+            - name: POSTGRES_DB
+              value: banking
+            - name: POSTGRES_SSLMODE
+              value: disable
+            - name: REDIS_ENABLED
+              value: 'true'
+            - name: REDIS_ADDR
+              value: redis:6379
+            - name: KAFKA_ENABLED
+              value: 'true'
+            - name: KAFKA_BROKERS
+              value: kafka:9092
+            - name: OTEL_ENABLED
+              value: 'true'
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: otel-collector.observability.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: 'true'
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: '1'
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
