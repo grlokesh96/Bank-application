@@ -77,6 +77,35 @@ jobs:
         id: discover
         run: .github/scripts/discover-services.sh
 
+      # A matrix that fails to parse, or that expands to zero entries, makes
+      # every downstream job vanish *silently* -- GitHub reports it only as a
+      # bare "failure" with no log. Validate the JSON here, at the source, so
+      # the real error is visible in this job instead of one hop downstream.
+      - name: Verify matrix outputs
+        env:
+          SERVICES_MATRIX: ${{ steps.discover.outputs.services_matrix }}
+          NODE_MATRIX: ${{ steps.discover.outputs.node_matrix }}
+          HADOLINT_MATRIX: ${{ steps.discover.outputs.hadolint_matrix }}
+          CODEQL_MATRIX: ${{ steps.discover.outputs.codeql_matrix }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in SERVICES_MATRIX NODE_MATRIX HADOLINT_MATRIX CODEQL_MATRIX; do
+            value="${!name}"
+            bytes="$(printf '%s' "$value" | wc -c)"
+            entries="$(printf '%s' "$value" \
+              | jq -r 'to_entries[0].value | .include | length' 2>/dev/null || echo invalid)"
+            echo "::group::$name"
+            echo "bytes   : $bytes"
+            echo "entries : $entries"
+            echo "::endgroup::"
+            if [ "$bytes" -eq 0 ] || [ "$entries" = invalid ] || [ "$entries" -eq 0 ]; then
+              echo "::error::$name is empty, unparseable, or has no entries (bytes=$bytes, entries=$entries)"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   # ===========================================================================
   # 1. Secrets scan — gitleaks
   # ===========================================================================
@@ -598,7 +627,10 @@ jobs:
           deploy_row="$(row "$R_PUSH" "Deployment (image published; Argo CD syncs)")"
 
           # The jq program is single-quoted on purpose: `$var` inside it is jq's own
-          # variable interpolation, not a shell expansion.
+          # variable interpolation, not a shell expansion. Strings are assembled with
+          # `\($var)` interpolation rather than `+` concatenation, because jq 1.7.x
+          # (the version shipped on ubuntu-latest) fails to *compile* `{key: "a" + $v}`
+          # object constructors even though newer jq accepts them.
           # shellcheck disable=SC2016
           payload=$(jq -n \
             --arg title "$title" \
@@ -622,29 +654,29 @@ jobs:
             --arg docker   "$(row "$images"     "Docker image status (scan · SBOM · push)")" \
             --arg deploy   "$deploy_row" \
             '{
-              text: ($title + " — " + $repo + " @" + $branch),
+              text: "\($title) — \($repo) @\($branch)",
               attachments: [{
                 color: $colour,
                 blocks: [
                   { type: "header", text: { type: "plain_text", text: $title, emoji: true } },
                   { type: "section", fields: [
-                    { type: "mrkdwn", text: "*Repository*\n`" + $repo + "`" },
-                    { type: "mrkdwn", text: "*Branch*\n`" + $branch + "`" },
-                    { type: "mrkdwn", text: "*Trigger*\n" + $trigger },
-                    { type: "mrkdwn", text: "*Commit*\n<" + $commit_url + "|" + $commit + ">" }
+                    { type: "mrkdwn", text: "*Repository*\n`\($repo)`" },
+                    { type: "mrkdwn", text: "*Branch*\n`\($branch)`" },
+                    { type: "mrkdwn", text: "*Trigger*\n\($trigger)" },
+                    { type: "mrkdwn", text: "*Commit*\n<\($commit_url)|\($commit)>" }
                   ]},
                   { type: "divider" },
-                  { type: "section", text: { type: "mrkdwn", text: "*Coverage*\n" + $coverage } },
-                  { type: "section", text: { type: "mrkdwn", text: "*Static analysis & quality gates*\n" + $hadolint + "\n" + $codeql + "\n" + $eslint } },
-                  { type: "section", text: { type: "mrkdwn", text: "*Security scan*\n" + $secrets + "\n" + $trivy + "\n" + $semgrep + "\n" + $owasp + "\n" + $security } },
-                  { type: "section", text: { type: "mrkdwn", text: "*Build & release*\n" + $build + "\n" + $docker + "\n" + $deploy } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Coverage*\n\($coverage)" } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Static analysis & quality gates*\n\($hadolint)\n\($codeql)\n\($eslint)" } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Security scan*\n\($secrets)\n\($trivy)\n\($semgrep)\n\($owasp)\n\($security)" } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Build & release*\n\($build)\n\($docker)\n\($deploy)" } },
                   { type: "divider" },
                   { type: "actions", elements: [
                     { type: "button", text: { type: "plain_text", text: "View workflow run", emoji: true },
                       url: $run_url, style: "primary" }
                   ]},
                   { type: "context", elements: [
-                    { type: "mrkdwn", text: "DevSecOps CI/CD · " + $trigger + " · <" + $run_url + "|open in GitHub>" }
+                    { type: "mrkdwn", text: "DevSecOps CI/CD · \($trigger) · <\($run_url)|open in GitHub>" }
                   ]}
                 ]
               }]
