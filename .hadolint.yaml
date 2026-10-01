@@ -1,0 +1,19 @@
+# Hadolint configuration for the Banking Platform images.
+#
+# `failure-threshold: warning` keeps informational findings (severity=info)
+# visible in the job log and the Slack summary without failing the pipeline.
+failure-threshold: warning
+
+trustedRegistries:
+  - docker.io
+  - gcr.io
+  - ghcr.io
+
+ignored:
+  # DL3059 ("multiple consecutive RUN") is deliberate in this repository:
+  #   - build/service.Dockerfile splits `go mod download` and `go build` so each
+  #     RUN keeps its own BuildKit cache mount, which is what makes the shared
+  #     image build incremental across the service matrix.
+  #   - templates/service-template/Dockerfile follows the same pattern.
+  # Consolidating them would invalidate that caching, so the finding is noise.
+  - DL3059

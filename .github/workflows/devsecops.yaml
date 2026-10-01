@@ -1,24 +1,40 @@
 # ==============================================================================
-# Banking Platform — DevSecOps CI (CI part only)
+# Banking Platform — DevSecOps CI/CD
 # ------------------------------------------------------------------------------
-# Security-first pipeline. Stages run sequentially via `needs:` so a failing
-# scan stops the pipeline before images are built/published.
+# Security-first, fully self-discovering pipeline. Nothing about the service
+# inventory is hardcoded: every matrix is built at runtime from what is on disk
+# by `.github/scripts/discover-services.sh`, so dropping a new service into
+# `services/<name>/` (go.mod) or a new Node app (package.json) is enough for it
+# to be linted, scanned, built and reported automatically.
 #
-#  1. Secrets scan            gitleaks
-#  2. Trivy filesystem scan   Trivy (fs)
-#  3. SAST (Semgrep)          Semgrep
-#  4. SCA (OWASP)             OWASP Dependency-Check
-#  5. Build                   docker build (buildx) for all services + frontend
-#  6. Image scan & SBOM       Trivy image scan + CycloneDX SBOM
-#  7. Push image              push to Docker Hub (main only)
+# Stages
+#   0.  Discover services     dynamic matrices (services / hadolint / codeql / eslint)
+#   1.  Secrets scan          gitleaks
+#   2.  Trivy filesystem      Trivy (fs)
+#   3.  SAST (Semgrep)        Semgrep
+#   4.  SCA (OWASP)           OWASP Dependency-Check
+#   5.  Dockerfile lint       Hadolint        (matrix: one job per Dockerfile)
+#   6.  SAST (CodeQL)         CodeQL          (matrix: go / js-ts / actions)
+#   7.  JS/TS lint            ESLint          (matrix: one job per Node service)
+#   8.  Build                 docker buildx   (matrix: every discovered service)
+#   9.  Image scan & SBOM     Trivy + CycloneDX (matrix: every discovered service)
+#   10. Push image            Docker Hub      (matrix, main only)
+#   11. Slack notification    success + failure summary
 #
-# Required GitHub configuration:
+# Gates 5-7 run in parallel with each other and all block the build, so a lint
+# or SAST regression never reaches an image.
+#
+# Required GitHub configuration
 #   Secrets:
-#     DOCKERHUB_USERNAME      - Docker Hub username
-#     DOCKERHUB_PASSWORD      - Docker Hub account password (or access token)
-#     SEMGREP_APP_TOKEN       - optional, for publishing Semgrep findings
-# =============================================================================
-name: DevSecOps CI
+#     DOCKERHUB_USERNAME      Docker Hub username
+#     DOCKERHUB_PASSWORD      Docker Hub password / access token
+#     SLACK_WEBHOOK_URL       incoming-webhook URL for the notification channel
+#     SEMGREP_APP_TOKEN       optional, for publishing Semgrep findings
+#   Note: the CodeQL and Semgrep stages upload SARIF via "security-events: write".
+#   That is free on public repositories; on a private repository it also requires
+#   GitHub Advanced Security.
+# ==============================================================================
+name: DevSecOps CI/CD
 
 on:
   push:
@@ -36,8 +52,31 @@ permissions:
 env:
   # Full single-repo image prefix, e.g. <dockerhub-user>/banking-platform
   IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}/banking-platform
+  # Non-fatal findings are reported, not blocked (learning setup).
+  HADOLINT_THRESHOLD: warning
 
 jobs:
+  # ===========================================================================
+  # 0. Discover services — build every downstream matrix from the repository.
+  # ===========================================================================
+  discover-services:
+    name: 0. Discover services
+    runs-on: ubuntu-latest
+    outputs:
+      services_matrix: ${{ steps.discover.outputs.services_matrix }}
+      node_matrix: ${{ steps.discover.outputs.node_matrix }}
+      hadolint_matrix: ${{ steps.discover.outputs.hadolint_matrix }}
+      codeql_matrix: ${{ steps.discover.outputs.codeql_matrix }}
+      service_count: ${{ steps.discover.outputs.service_count }}
+      services_list: ${{ steps.discover.outputs.services_list }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect services, Dockerfiles and languages
+        id: discover
+        run: .github/scripts/discover-services.sh
+
   # ===========================================================================
   # 1. Secrets scan — gitleaks
   # ===========================================================================
@@ -108,7 +147,7 @@ jobs:
           sarif_file: semgrep.sarif
 
   # ===========================================================================
-  # 4. SCA (OWASP Dependency-Check) — dependency vulnerability check
+  # 4. SCA (OWASP) — dependency vulnerability check
   # ===========================================================================
   sca-owasp:
     name: 4. SCA (OWASP)
@@ -136,51 +175,180 @@ jobs:
           path: reports/
 
   # ===========================================================================
-  # 5. Build — docker build all images in parallel (load locally + archive
-  #    for the scan and push stages, which run on fresh runners).
+  # 5. Dockerfile lint — Hadolint, one matrix job per discovered Dockerfile.
+  #    `build/service.Dockerfile` is shared by every Go service, so it is
+  #    linted once and reported with the number of services it covers.
   # ===========================================================================
-  build:
-    name: 5. Build (${{ matrix.service }})
+  hadolint:
+    name: 5. Hadolint (${{ matrix.dockerfile.label }})
     runs-on: ubuntu-latest
-    needs: sca-owasp
+    needs: [sca-owasp, discover-services]
+    strategy:
+      fail-fast: false # report every Dockerfile, not just the first failure
+      matrix:
+        dockerfile: ${{ fromJSON(needs.discover-services.outputs.hadolint_matrix).dockerfile }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Report coverage
+        run: |
+          echo "::group::Dockerfile under review"
+          echo "file      : ${{ matrix.dockerfile.file }}"
+          echo "consumers : ${{ matrix.dockerfile.count }} service(s)"
+          echo "::endgroup::"
+
+      - name: Hadolint
+        id: lint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile.file }}
+          # `info` findings stay visible in the log without failing the build.
+          failure-threshold: ${{ env.HADOLINT_THRESHOLD }}
+          # Reads .hadolint.yaml (ignored: DL3059, trusted registries).
+          config: .hadolint.yaml
+
+      - name: Annotate result
+        if: always()
+        env:
+          FILE: ${{ matrix.dockerfile.file }}
+          COUNT: ${{ matrix.dockerfile.count }}
+          OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          if [ "$COUNT" -gt 0 ]; then
+            scope="$COUNT service(s)"
+          else
+            scope="standalone image"
+          fi
+          echo "| \`$FILE\` ($scope) | \`$OUTCOME\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # 6. SAST (CodeQL) — semantic analysis per detected language, in parallel.
+  #    The build mode is discovered alongside the language because it is not
+  #    uniform: Go MUST be compiled (`none` is rejected by the Go extractor),
+  #    while JavaScript/TypeScript and workflow files are analysed as-is.
+  # ===========================================================================
+  codeql:
+    name: 6. CodeQL (${{ matrix.codeql.name }})
+    runs-on: ubuntu-latest
+    needs: [sca-owasp, discover-services]
+    permissions:
+      contents: read
+      security-events: write # SARIF upload to GitHub code scanning
+      actions: read
     strategy:
       fail-fast: false
       matrix:
-        # Shared service matrix (YAML anchor, defined on first use) so build /
-        # scan / push stay in sync.
-        service: &services
-          - auth-service
-          - authz-service
-          - customer-service
-          - profile-service
-          - kyc-service
-          - document-service
-          - ledger-service
-          - account-service
-          - transaction-service
-          - beneficiary-service
-          - payment-service
-          - wallet-service
-          - loan-service
-          - emi-service
-          - fixed-deposit-service
-          - recurring-deposit-service
-          - card-service
-          - investment-service
-          - currency-exchange-service
-          - audit-service
-          - fraud-service
-          - notification-service
-          - statement-service
-          - reports-service
-          - analytics-service
-          - search-service
-          - email-service
-          - sms-service
-          - support-service
-          - admin-service
-          - api-gateway
-          - frontend
+        codeql: ${{ fromJSON(needs.discover-services.outputs.codeql_matrix).codeql }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Autobuild shells out to the Go toolchain, so pin the version the repo
+      # asks for (go.work) rather than whatever the runner image ships.
+      - name: Set up Go toolchain
+        if: matrix.codeql.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - name: Initialize CodeQL (${{ matrix.codeql.language }})
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.codeql.language }}
+          build-mode: ${{ matrix.codeql.build_mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.codeql.language }}
+
+  # ===========================================================================
+  # 7. ESLint — one matrix job per Node.js service (JS/TS/JSX).
+  # ===========================================================================
+  eslint:
+    name: 7. ESLint (${{ matrix.node.name }})
+    runs-on: ubuntu-latest
+    needs: [sca-owasp, discover-services]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(needs.discover-services.outputs.node_matrix).node }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # A newly added Node service may not have a lockfile committed yet.
+      # npm ci (the reproducible path) is preferred, but the job must not
+      # break purely because of a missing lockfile.
+      - name: Resolve install strategy
+        id: meta
+        run: |
+          # Distinct appends to two different files, deliberately separate.
+          # shellcheck disable=SC2129
+          if [ -f "${{ matrix.node.service }}/package-lock.json" ]; then
+            echo "lock=true" >> "$GITHUB_OUTPUT"
+            echo "Lockfile present — installing with \`npm ci\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "lock=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No package-lock.json in ${{ matrix.node.service }} — falling back to npm install."
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: ${{ steps.meta.outputs.lock }}
+          cache-dependency-path: ${{ matrix.node.service }}/package-lock.json
+
+      - name: Install dependencies
+        if: steps.meta.outputs.lock == 'true'
+        working-directory: ${{ matrix.node.service }}
+        run: npm ci --no-audit --no-fund
+
+      - name: Install dependencies (no lockfile)
+        if: steps.meta.outputs.lock != 'true'
+        working-directory: ${{ matrix.node.service }}
+        run: npm install --no-audit --no-fund
+
+      - name: Run ESLint
+        id: lint
+        working-directory: ${{ matrix.node.service }}
+        run: |
+          if [ -f package.json ] && node -e \
+            'process.exit(require("./package.json").scripts?.lint ? 0 : 1)'; then
+            npm run lint
+          else
+            # No lint script yet — lint with the project's config directly.
+            echo "No 'lint' script in ${{ matrix.node.service }}/package.json; running eslint directly."
+            npx --no-install eslint .
+          fi
+
+      - name: Summarise
+        if: always()
+        env:
+          SERVICE: ${{ matrix.node.service }}
+          OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          {
+            echo "### ESLint — \`$SERVICE\`"
+            echo ""
+            echo "- Result: \`$OUTCOME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # 8. Build — docker build for every discovered service, in parallel.
+  #    Matrix is injected from discovery, so new services build automatically.
+  # ===========================================================================
+  build:
+    name: 8. Build (${{ matrix.service.name }})
+    runs-on: ubuntu-latest
+    needs: [discover-services, hadolint, codeql, eslint]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -190,18 +358,22 @@ jobs:
         run: echo "sha=$(echo "${GITHUB_SHA}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       # Backend services share build/service.Dockerfile + SERVICE build-arg;
-      # the frontend has its own Dockerfile.
+      # a Node service uses its own <dir>/Dockerfile.
       - name: Resolve build inputs
         id: img
         run: |
-          if [ "${{ matrix.service }}" = "frontend" ]; then
-            echo "context=./frontend" >> "$GITHUB_OUTPUT"
-            echo "dockerfile=./frontend/Dockerfile" >> "$GITHUB_OUTPUT"
-            echo "buildargs=" >> "$GITHUB_OUTPUT"
+          if [ -f "${{ matrix.service.service }}/Dockerfile" ]; then
+            {
+              echo "context=./${{ matrix.service.service }}"
+              echo "dockerfile=./${{ matrix.service.service }}/Dockerfile"
+              echo "buildargs="
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "context=." >> "$GITHUB_OUTPUT"
-            echo "dockerfile=build/service.Dockerfile" >> "$GITHUB_OUTPUT"
-            echo "buildargs=SERVICE=${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+            {
+              echo "context=."
+              echo "dockerfile=build/service.Dockerfile"
+              echo "buildargs=SERVICE=${{ matrix.service.name }}"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
@@ -215,31 +387,31 @@ jobs:
           build-args: ${{ steps.img.outputs.buildargs }}
           push: false
           load: true
-          tags: ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-${{ steps.vars.outputs.sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          tags: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.service.name }}
+          cache-to: type=gha,scope=${{ matrix.service.name }},mode=max
 
       - name: Archive image
-        run: docker save ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-${{ steps.vars.outputs.sha }} | gzip > /tmp/${{ matrix.service }}.tar.gz
+        run: docker save ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }} | gzip > /tmp/${{ matrix.service.name }}.tar.gz
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: image-${{ matrix.service }}
-          path: /tmp/${{ matrix.service }}.tar.gz
+          name: image-${{ matrix.service.name }}
+          path: /tmp/${{ matrix.service.name }}.tar.gz
           retention-days: 7
 
   # ===========================================================================
-  # 6. Image scan & SBOM — Trivy image scan (gate) + CycloneDX SBOM artifact
+  # 9. Image scan & SBOM — Trivy image scan (gate) + CycloneDX SBOM artifact
   # ===========================================================================
   image-scan-sbom:
-    name: 6. Image scan & SBOM (${{ matrix.service }})
+    name: 9. Image scan & SBOM (${{ matrix.service.name }})
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, discover-services]
     strategy:
       fail-fast: false
       matrix:
-        service: *services
+        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
     steps:
       - name: Compute short SHA
         id: vars
@@ -248,17 +420,17 @@ jobs:
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
-          name: image-${{ matrix.service }}
+          name: image-${{ matrix.service.name }}
           path: /tmp/img
 
       - name: Load image
-        run: docker load -i /tmp/img/${{ matrix.service }}.tar.gz
+        run: docker load -i /tmp/img/${{ matrix.service.name }}.tar.gz
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-${{ steps.vars.outputs.sha }}
+          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
           format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -268,32 +440,32 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-${{ steps.vars.outputs.sha }}
+          image-ref: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
           format: cyclonedx
-          output: sbom-${{ matrix.service }}.cdx.json
+          output: sbom-${{ matrix.service.name }}.cdx.json
           skip-setup-trivy: true
 
       - name: Upload SBOM
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.service }}
-          path: sbom-${{ matrix.service }}.cdx.json
+          name: sbom-${{ matrix.service.name }}
+          path: sbom-${{ matrix.service.name }}.cdx.json
           retention-days: 7
 
   # ===========================================================================
-  # 7. Push image — Docker Hub push of <service>-<sha> and <service>-latest.
-  #    Runs only after every scan passes, on main pushes / manual runs.
+  # 10. Push image — Docker Hub push of <service>-<sha> and <service>-latest.
+  #     Runs only after every scan passes, on main pushes / manual runs.
   # ===========================================================================
   push-image:
-    name: 7. Push image (${{ matrix.service }})
+    name: 10. Push image (${{ matrix.service.name }})
     runs-on: ubuntu-latest
-    needs: image-scan-sbom
+    needs: [image-scan-sbom, discover-services]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
-        service: *services
+        service: ${{ fromJSON(needs.discover-services.outputs.services_matrix).service }}
     steps:
       - name: Compute short SHA
         id: vars
@@ -302,11 +474,11 @@ jobs:
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
-          name: image-${{ matrix.service }}
+          name: image-${{ matrix.service.name }}
           path: /tmp/img
 
       - name: Load image
-        run: docker load -i /tmp/img/${{ matrix.service }}.tar.gz
+        run: docker load -i /tmp/img/${{ matrix.service.name }}.tar.gz
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -316,9 +488,219 @@ jobs:
 
       - name: Push image (sha + latest)
         env:
-          IMG: ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-${{ steps.vars.outputs.sha }}
-          LATEST: ${{ env.IMAGE_PREFIX }}:${{ matrix.service }}-latest
+          IMG: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-${{ steps.vars.outputs.sha }}
+          LATEST: ${{ env.IMAGE_PREFIX }}:${{ matrix.service.name }}-latest
         run: |
           docker tag "$IMG" "$LATEST"
           docker push "$IMG"
           docker push "$LATEST"
+
+  # ===========================================================================
+  # 11. Slack notification — always runs (success or failure).
+  #     Aggregates every stage result into one Block Kit summary.
+  # ===========================================================================
+  slack-notify:
+    name: 11. Slack notification
+    runs-on: ubuntu-latest
+    needs:
+      - discover-services
+      - secrets-scan
+      - trivy-fs-scan
+      - sast-semgrep
+      - sca-owasp
+      - hadolint
+      - codeql
+      - eslint
+      - build
+      - image-scan-sbom
+      - push-image
+    # Report on success and on failure; skip only if the run was cancelled.
+    if: always() && needs.discover-services.result != 'cancelled'
+    steps:
+      - name: Build Slack payload
+        id: slack
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.actor }}
+          RUN_NO: ${{ github.run_number }}
+          SERVICES_COUNT: ${{ needs.discover-services.outputs.service_count }}
+          SERVICES_LIST: ${{ needs.discover-services.outputs.services_list }}
+          R_DISCOVER: ${{ needs.discover-services.result }}
+          R_SECRETS: ${{ needs.secrets-scan.result }}
+          R_TRIVY: ${{ needs.trivy-fs-scan.result }}
+          R_SEMGREP: ${{ needs.sast-semgrep.result }}
+          R_OWASP: ${{ needs.sca-owasp.result }}
+          R_HADOLINT: ${{ needs.hadolint.result }}
+          R_CODEQL: ${{ needs.codeql.result }}
+          R_ESLINT: ${{ needs.eslint.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_IMAGE: ${{ needs.image-scan-sbom.result }}
+          R_PUSH: ${{ needs.push-image.result }}
+        run: |
+          set -euo pipefail
+
+          icon() {
+            case "${1:-}" in
+              success)   echo ":white_check_mark:" ;;
+              failure)   echo ":x:" ;;
+              cancelled) echo ":no_entry_sign:" ;;
+              skipped)   echo ":next_track_button:" ;;
+              *)         echo ":grey_question:" ;;
+            esac
+          }
+
+          # "✅ *Label*: `result`"
+          # Backticks are literal Slack code formatting, not substitution.
+          # shellcheck disable=SC2016
+          row() { printf '%s *%s*: `%s`' "$(icon "$1")" "$2" "${1:-unknown}"; }
+
+          # Roll a set of stage results into one: any failure wins, then any
+          # cancellation, then success if anything actually ran, else skipped.
+          roll() {
+            local r
+            for r in "$@"; do
+              case "${r:-}" in failure|cancelled) echo "$r"; return ;; esac
+            done
+            for r in "$@"; do
+              [ "${r:-}" = success ] && { echo success; return; }
+            done
+            echo skipped
+          }
+
+          gates="$(roll "$R_SECRETS" "$R_TRIVY" "$R_SEMGREP" "$R_OWASP" "$R_HADOLINT" "$R_CODEQL" "$R_ESLINT")"
+          images="$(roll "$R_IMAGE" "$R_PUSH")"
+          result="$(roll "$R_DISCOVER" "$R_SECRETS" "$R_TRIVY" "$R_SEMGREP" "$R_OWASP" \
+                           "$R_HADOLINT" "$R_CODEQL" "$R_ESLINT" "$R_BUILD" "$R_IMAGE" "$R_PUSH")"
+
+          case "$result" in
+            success)   title=":white_check_mark: Pipeline passed";      colour="#2eb886" ;;
+            failure)   title=":rotating_light: Pipeline failed";        colour="#e01563" ;;
+            cancelled) title=":no_entry: Pipeline cancelled";           colour="#b9b9b9" ;;
+            *)         title=":grey_question: Pipeline incomplete";     colour="#e8a33d" ;;
+          esac
+
+          short_sha="${SHA:0:8}"
+          if [ -n "${PR:-}" ]; then
+            commit="PR #${PR} — ${PR_TITLE}"
+            commit_url="${RUN_URL}"
+          else
+            commit="\`${short_sha}\`"
+            commit_url="https://github.com/${REPO}/commit/${SHA}"
+          fi
+
+          # Argo CD performs the actual cluster sync, off-repo.
+          deploy_row="$(row "$R_PUSH" "Deployment (image published; Argo CD syncs)")"
+
+          # The jq program is single-quoted on purpose: `$var` inside it is jq's own
+          # variable interpolation, not a shell expansion.
+          # shellcheck disable=SC2016
+          payload=$(jq -n \
+            --arg title "$title" \
+            --arg colour "$colour" \
+            --arg repo "$REPO" \
+            --arg branch "$REF_NAME" \
+            --arg trigger "${EVENT} by ${AUTHOR} · run #${RUN_NO}" \
+            --arg commit "$commit" \
+            --arg commit_url "$commit_url" \
+            --arg run_url "$RUN_URL" \
+            --arg coverage "**${SERVICES_COUNT} service(s) scanned** — ${SERVICES_LIST}" \
+            --arg hadolint "$(row "$R_HADOLINT" "Hadolint (Dockerfiles)")" \
+            --arg codeql   "$(row "$R_CODEQL"   "CodeQL SAST")" \
+            --arg eslint   "$(row "$R_ESLINT"   "ESLint (JS/TS)")" \
+            --arg secrets  "$(row "$R_SECRETS"  "Gitleaks (secrets)")" \
+            --arg trivy    "$(row "$R_TRIVY"    "Trivy (filesystem SCA)")" \
+            --arg semgrep  "$(row "$R_SEMGREP"  "Semgrep SAST")" \
+            --arg owasp    "$(row "$R_OWASP"    "OWASP Dependency-Check")" \
+            --arg security "$(row "$gates" "Security scan status")" \
+            --arg build    "$(row "$R_BUILD"    "Build status")" \
+            --arg docker   "$(row "$images"     "Docker image status (scan · SBOM · push)")" \
+            --arg deploy   "$deploy_row" \
+            '{
+              text: ($title + " — " + $repo + " @" + $branch),
+              attachments: [{
+                color: $colour,
+                blocks: [
+                  { type: "header", text: { type: "plain_text", text: $title, emoji: true } },
+                  { type: "section", fields: [
+                    { type: "mrkdwn", text: "*Repository*\n`" + $repo + "`" },
+                    { type: "mrkdwn", text: "*Branch*\n`" + $branch + "`" },
+                    { type: "mrkdwn", text: "*Trigger*\n" + $trigger },
+                    { type: "mrkdwn", text: "*Commit*\n<" + $commit_url + "|" + $commit + ">" }
+                  ]},
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: "*Coverage*\n" + $coverage } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Static analysis & quality gates*\n" + $hadolint + "\n" + $codeql + "\n" + $eslint } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Security scan*\n" + $secrets + "\n" + $trivy + "\n" + $semgrep + "\n" + $owasp + "\n" + $security } },
+                  { type: "section", text: { type: "mrkdwn", text: "*Build & release*\n" + $build + "\n" + $docker + "\n" + $deploy } },
+                  { type: "divider" },
+                  { type: "actions", elements: [
+                    { type: "button", text: { type: "plain_text", text: "View workflow run", emoji: true },
+                      url: $run_url, style: "primary" }
+                  ]},
+                  { type: "context", elements: [
+                    { type: "mrkdwn", text: "DevSecOps CI/CD · " + $trigger + " · <" + $run_url + "|open in GitHub>" }
+                  ]}
+                ]
+              }]
+            }')
+
+          {
+            # base64 keeps the JSON on a single line, safe for GITHUB_OUTPUT.
+            echo "payload=$(printf '%s' "$payload" | base64 -w0)"
+            echo "title=$title"
+            echo "result=$result"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack notification
+        if: steps.slack.outputs.payload != ''
+        continue-on-error: true # a Slack outage must not fail the pipeline
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PAYLOAD_B64: ${{ steps.slack.outputs.payload }}
+        run: |
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not configured — skipping Slack notification."
+            exit 0
+          fi
+          code=$(printf '%s' "$PAYLOAD_B64" | base64 -d | curl -sS -o /tmp/slack.out -w '%{http_code}' \
+            -X POST -H 'Content-Type: application/json' --data-binary @- "$WEBHOOK")
+          if [ "$code" != "200" ]; then
+            echo "::warning::Slack webhook returned HTTP $code: $(cat /tmp/slack.out)"
+            exit 0
+          fi
+          echo "Slack notification sent."
+
+      - name: Publish summary to the run page
+        if: always()
+        env:
+          TITLE: ${{ steps.slack.outputs.title }}
+          RESULT: ${{ steps.slack.outputs.result }}
+          SERVICES: ${{ needs.discover-services.outputs.service_count }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "### ${TITLE:-Pipeline result unavailable}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| ----- | ------ |"
+            echo "| Secrets scan (Gitleaks) | ${{ needs.secrets-scan.result }} |"
+            echo "| Trivy filesystem | ${{ needs.trivy-fs-scan.result }} |"
+            echo "| SAST (Semgrep) | ${{ needs.sast-semgrep.result }} |"
+            echo "| SCA (OWASP) | ${{ needs.sca-owasp.result }} |"
+            echo "| Hadolint | ${{ needs.hadolint.result }} |"
+            echo "| CodeQL | ${{ needs.codeql.result }} |"
+            echo "| ESLint | ${{ needs.eslint.result }} |"
+            echo "| Build | ${{ needs.build.result }} |"
+            echo "| Image scan & SBOM | ${{ needs.image-scan-sbom.result }} |"
+            echo "| Push image | ${{ needs.push-image.result }} |"
+            echo ""
+            echo "Services discovered: **$SERVICES**"
+            echo ""
+            echo "[Open this workflow run]($RUN_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
