@@ -325,7 +325,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: ${{ steps.meta.outputs.lock }}
+          # Name the package manager explicitly rather than passing "true".
+          # setup-node only auto-detects by scanning for a lockfile in the
+          # repository root, and this repo keeps it in frontend/, so "true"
+          # made it fall back to treating the literal string "true" as a
+          # package manager and fail with `Caching for 'true' is not supported`.
+          cache: ${{ steps.meta.outputs.lock && 'npm' || '' }}
           cache-dependency-path: ${{ matrix.dir }}/package-lock.json
 
       - name: Install dependencies
