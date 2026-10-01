@@ -54,6 +54,11 @@ env:
   IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}/banking-platform
   # Non-fatal findings are reported, not blocked (learning setup).
   HADOLINT_THRESHOLD: warning
+  # Amazon ECR — the registry deploy/helm/banking-platform/values.yaml pins, so
+  # stage 10 publishes the same image to Docker Hub and ECR. One-line change to
+  # retarget a different account.
+  AWS_REGION: us-east-1
+  AWS_ECR_REGISTRY: 118178010323.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   # ===========================================================================
@@ -491,6 +496,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [image-scan-sbom, discover-services]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Mapped here rather than referenced via `secrets.` inline, because a
+    # step-level `if:` cannot read the secrets context. Empty when unset, which
+    # is what gates the ECR steps.
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
@@ -522,6 +533,68 @@ jobs:
           docker tag "$IMG" "$LATEST"
           docker push "$IMG"
           docker push "$LATEST"
+
+      # ---------------------------------------------------------------------
+      # Amazon ECR mirror. The Docker Hub push above is the primary publish
+      # path; this additionally publishes the identical artifact to ECR, which
+      # is the registry deploy/helm/banking-platform/values.yaml pins, so the
+      # cluster can pull the same bits CI produced.
+      #
+      # Credentials come from the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+      # repository secrets (mapped into env on this job, because `secrets` is
+      # not available in a step-level `if:`). While those are absent this step
+      # skips and the Docker Hub path keeps working on its own.
+      #
+      # Long-lived keys are not ideal here. The stronger option is OIDC: drop
+      # this credential block, give the job `permissions: id-token: write`, and
+      # point configure-aws-credentials at an IAM role via `role-to-assume`
+      # scoped to ecr:GetAuthorizationToken plus push on this account only.
+      # ---------------------------------------------------------------------
+      - name: Login to Amazon ECR
+        if: env.AWS_ACCESS_KEY_ID != '' && env.AWS_SECRET_ACCESS_KEY != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Push image to Amazon ECR
+        if: env.AWS_ACCESS_KEY_ID != '' && env.AWS_SECRET_ACCESS_KEY != ''
+        env:
+          REGISTRY: ${{ env.AWS_ECR_REGISTRY }}
+          # Source: the local image loaded from the build artifact, which is
+          # tagged with the Docker Hub prefix — not the ECR one.
+          SRC: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          SHA_TAG: ${{ env.AWS_ECR_REGISTRY }}/banking-platform:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          LATEST_TAG: ${{ env.AWS_ECR_REGISTRY }}/banking-platform:${{ matrix.name }}-latest
+        run: |
+          set -euo pipefail
+
+          # Short-lived (12h) ECR token, exactly as on the AWS CLI.
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+          # Re-tag the artifact that is already built, scanned and loaded
+          # rather than rebuilding: a per-service `docker build .` would ignore
+          # the SERVICE build-arg and publish an image different from the one
+          # Trivy and Syft just inspected.
+          if ! docker image inspect "$SRC" >/dev/null 2>&1; then
+            echo "::error::loaded image $SRC not found; refusing to push an unverified build"
+            exit 1
+          fi
+          docker tag "$SRC" "$SHA_TAG"
+          docker tag "$SRC" "$LATEST_TAG"
+          docker push "$SHA_TAG"
+          # Capture the registry digest from the push itself: SHA_TAG is
+          # immutable per commit, so this identifies exactly what was scanned.
+          digest="$(docker push "$LATEST_TAG" 2>&1 | sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | tail -1)"
+
+          {
+            echo "### ${{ matrix.name }} → ECR"
+            echo ""
+            echo "- sha tag : \`$SHA_TAG\`"
+            echo "- digest  : \`${digest:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ===========================================================================
   # 11. Slack notification — always runs (success or failure).
