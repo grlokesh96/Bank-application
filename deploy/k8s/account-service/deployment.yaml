@@ -16,7 +16,7 @@ metadata:
     app.kubernetes.io/name: account-service
     app.kubernetes.io/part-of: banking-platform
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: account-service
