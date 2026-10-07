@@ -1,78 +1,164 @@
 # Local development dependencies for the banking platform.
-# Start with:  make compose-up   (or: docker compose up -d)
 #
-# These mirror what runs in-cluster on EKS (Postgres, Redis, Kafka), all
-# self-hosted — no managed AWS data services, per the project's learning goal.
+# Start:
+#   docker compose up -d
+#
+# Stop:
+#   docker compose down
+#
+# These services mirror the self-hosted dependencies used in the EKS
+# environment: PostgreSQL, Redis, and Kafka.
+#
+# No managed AWS data services are used for local development.
 
 name: banking-platform
 
 services:
+
+  # ------------------------------------------------------------
+  # PostgreSQL
+  # ------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: banking-postgres
+    restart: unless-stopped
+
     environment:
       POSTGRES_USER: banking
       POSTGRES_PASSWORD: banking
       POSTGRES_DB: banking
+
     ports:
       - "5432:5432"
+
     volumes:
       - pgdata:/var/lib/postgresql/data
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U banking -d banking"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U banking -d banking"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
+
+  # ------------------------------------------------------------
+  # Redis
+  # ------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: banking-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
     ports:
       - "6379:6379"
+
     volumes:
       - redisdata:/data
+
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 5s
 
+
+  # ------------------------------------------------------------
+  # Kafka - KRaft Mode
+  # ------------------------------------------------------------
   kafka:
     image: apache/kafka:3.8.1
     container_name: banking-kafka
+    restart: unless-stopped
+
     ports:
       - "9092:9092"
+
     environment:
+
+      # KRaft
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # Three listeners: CONTROLLER (raft), INTERNAL (compose network), EXTERNAL (host).
-      KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:9094,EXTERNAL://:9092
+
+      # Listeners
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:9094,EXTERNAL://0.0.0.0:9092
+
+      # Addresses advertised to clients
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9094,EXTERNAL://localhost:9092
+
+      # Security protocol mapping
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+
+      # Broker communication
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      # Controller
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      # Single-node development configuration
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Development convenience
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
     volumes:
       - kafkadata:/var/lib/kafka/data
 
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+
+  # ------------------------------------------------------------
+  # Kafka UI
+  # ------------------------------------------------------------
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: banking-kafka-ui
+    restart: unless-stopped
+
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+
     ports:
       - "8090:8080"
+
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9094
       DYNAMIC_CONFIG_ENABLED: "true"
 
+
+# --------------------------------------------------------------
+# Persistent volumes
+# --------------------------------------------------------------
 volumes:
   pgdata:
   redisdata:
