@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build the SPA, then serve it with nginx (which also proxies /api to the gateway).
 
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package.json ./
 RUN npm install
