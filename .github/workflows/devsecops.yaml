@@ -20,6 +20,7 @@
 #   9.  Image scan & SBOM     Trivy + CycloneDX (matrix: every discovered service)
 #   10. Push image            Docker Hub      (matrix, main only)
 #   11. Slack notification    success + failure summary
+#   12. Push image to ACR     Azure Container Registry (matrix, main only, optional)
 #
 # Gates 5-7 run in parallel with each other and all block the build, so a lint
 # or SAST regression never reaches an image.
@@ -30,6 +31,9 @@
 #     DOCKERHUB_PASSWORD      Docker Hub password / access token
 #     SLACK_WEBHOOK_URL       incoming-webhook URL for the notification channel
 #     SEMGREP_APP_TOKEN       optional, for publishing Semgrep findings
+#     ACR_LOGIN_SERVER        optional, e.g. myregistry.azurecr.io
+#     ACR_USERNAME            optional, ACR service principal ID or admin user
+#     ACR_PASSWORD            optional, ACR service principal secret or admin password
 #   Note: the CodeQL and Semgrep stages upload SARIF via "security-events: write".
 #   That is free on public repositories; on a private repository it also requires
 #   GitHub Advanced Security.
@@ -594,6 +598,86 @@ jobs:
             echo ""
             echo "- sha tag : \`$SHA_TAG\`"
             echo "- digest  : \`${digest:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # 12. Push image to Azure Container Registry (optional).
+  #     Skipped automatically when the ACR secrets are not configured.
+  #     Runs on main pushes / manual runs, after every image scan passes.
+  # ===========================================================================
+  push-acr:
+    name: 12. Push to ACR (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: [image-scan-sbom, discover-services]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Job-level `if:` cannot read the env context, so the gate is evaluated
+    # in a step below and every later step checks its output.
+    env:
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
+    steps:
+      - name: Check ACR configuration
+        id: gate
+        run: |
+          if [ -n "$ACR_LOGIN_SERVER" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ACR secrets are not set. Skipping ACR push."
+          fi
+
+      - name: Compute short SHA
+        id: vars
+        run: echo "sha=$(echo "${GITHUB_SHA}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Download image artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.name }}
+          path: /tmp/img
+
+      - name: Load image
+        if: steps.gate.outputs.enabled == 'true'
+        run: docker load -i /tmp/img/${{ matrix.name }}.tar.gz
+
+      - name: Login to Azure Container Registry
+        if: steps.gate.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ env.ACR_PASSWORD }}
+
+      - name: Tag and push image to ACR
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          SRC: ${{ env.IMAGE_PREFIX }}:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          SHA_TAG: ${{ env.ACR_LOGIN_SERVER }}/banking-platform:${{ matrix.name }}-${{ steps.vars.outputs.sha }}
+          LATEST_TAG: ${{ env.ACR_LOGIN_SERVER }}/banking-platform:${{ matrix.name }}-latest
+        run: |
+          set -euo pipefail
+
+          # Re-tag the image that was built and scanned, rather than rebuilding it.
+          if ! docker image inspect "$SRC" >/dev/null 2>&1; then
+            echo "::error::Loaded image $SRC not found. Refusing to push an unverified build."
+            exit 1
+          fi
+
+          docker tag "$SRC" "$SHA_TAG"
+          docker tag "$SRC" "$LATEST_TAG"
+          docker push "$SHA_TAG"
+          docker push "$LATEST_TAG"
+
+          {
+            echo "### ${{ matrix.name }} → ACR"
+            echo ""
+            echo "- sha tag : \`$SHA_TAG\`"
+            echo "- latest  : \`$LATEST_TAG\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ===========================================================================
