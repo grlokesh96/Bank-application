@@ -16,7 +16,7 @@ metadata:
     app.kubernetes.io/name: api-gateway
     app.kubernetes.io/part-of: banking-platform
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: api-gateway
