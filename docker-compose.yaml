@@ -25,7 +25,7 @@ services:
 
     environment:
       POSTGRES_USER: banking
-      POSTGRES_PASSWORD: banking
+      POSTGRES_PASSWORD: nopassword
       POSTGRES_DB: banking
 
     ports:
