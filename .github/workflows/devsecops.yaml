@@ -14,16 +14,13 @@
 #   7   JS/TS lint             ESLint            (blocking)
 #   8   Build                  Docker Buildx
 #   9   Image scan and SBOM    Trivy + CycloneDX
-#   10  Push (parallel)        Docker Hub (required), ACR (required),
-#                              ECR (optional), main only
+#   10  Push                   Docker Hub, main only
 #   11  Notify                 Slack summary, always runs
 #
 # Required secrets
-#   DOCKERHUB_USERNAME, DOCKERHUB_PASSWORD
-#   ACR_LOGIN_SERVER, ACR_USERNAME, ACR_PASSWORD   (required on main)
+#   DOCKERHUB_USERNAME, DOCKERHUB_PASSWORD         (required on main)
 #
 # Optional secrets
-#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY       enables ECR push
 #   SLACK_WEBHOOK_URL                              enables Slack notification
 #   SEMGREP_APP_TOKEN                              publishes Semgrep results
 # ==============================================================================
@@ -44,10 +41,6 @@ permissions:
 
 env:
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/banking-platform
-  ACR_REPO: ${{ secrets.ACR_LOGIN_SERVER }}/banking-platform
-  AWS_REGION: us-east-1
-  AWS_ECR_REGISTRY: 118178010323.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPO: 118178010323.dkr.ecr.us-east-1.amazonaws.com/banking-platform
   HADOLINT_THRESHOLD: warning
 
 jobs:
@@ -329,10 +322,10 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # 10. Push. The three registry jobs below run in parallel after the scans.
+  # 10. Push to Docker Hub, main only
   # ---------------------------------------------------------------------------
   push-dockerhub:
-    name: 10a. Push Docker Hub (${{ matrix.name }})
+    name: 10. Push Docker Hub (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [image-scan-sbom, discover-services]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -383,126 +376,6 @@ jobs:
             echo "- \`$REPO:${SERVICE}-${sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  push-acr:
-    name: 10b. Push ACR (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    needs: [image-scan-sbom, discover-services]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
-    steps:
-      - name: Validate ACR configuration
-        env:
-          LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-          USERNAME: ${{ secrets.ACR_USERNAME }}
-          PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          if [ -z "$LOGIN_SERVER" ] || [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-            echo "::error::ACR_LOGIN_SERVER, ACR_USERNAME and ACR_PASSWORD must all be set to push to ACR"
-            exit 1
-          fi
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: image-${{ matrix.name }}
-          path: /tmp/img
-
-      - name: Load image
-        run: docker load -i "/tmp/img/${{ matrix.name }}.tar.gz"
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Tag and push
-        env:
-          SERVICE: ${{ matrix.name }}
-          REPO: ${{ env.ACR_REPO }}
-        run: |
-          set -euo pipefail
-          sha="${GITHUB_SHA:0:12}"
-          src="${SERVICE}:${sha}"
-
-          docker tag "$src" "$REPO:${SERVICE}-${sha}"
-          docker tag "$src" "$REPO:${SERVICE}-latest"
-          docker push "$REPO:${SERVICE}-${sha}"
-          docker push "$REPO:${SERVICE}-latest"
-
-          {
-            echo "### Pushed ${SERVICE} to ACR"
-            echo ""
-            echo "- \`$REPO:${SERVICE}-${sha}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  push-ecr:
-    name: 10c. Push ECR (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    needs: [image-scan-sbom, discover-services]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.discover-services.outputs.services_matrix) }}
-    steps:
-      - name: Check AWS configuration
-        id: aws
-        env:
-          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          if [ -n "$KEY_ID" ] && [ -n "$SECRET" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::AWS secrets not set, skipping ECR"
-          fi
-
-      - uses: actions/download-artifact@v4
-        if: steps.aws.outputs.enabled == 'true'
-        with:
-          name: image-${{ matrix.name }}
-          path: /tmp/img
-
-      - name: Load image
-        if: steps.aws.outputs.enabled == 'true'
-        run: docker load -i "/tmp/img/${{ matrix.name }}.tar.gz"
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        if: steps.aws.outputs.enabled == 'true'
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Login to ECR
-        if: steps.aws.outputs.enabled == 'true'
-        run: |
-          aws ecr get-login-password --region "$AWS_REGION" \
-            | docker login --username AWS --password-stdin "$AWS_ECR_REGISTRY"
-
-      - name: Tag and push
-        if: steps.aws.outputs.enabled == 'true'
-        env:
-          SERVICE: ${{ matrix.name }}
-          REPO: ${{ env.ECR_REPO }}
-        run: |
-          set -euo pipefail
-          sha="${GITHUB_SHA:0:12}"
-          src="${SERVICE}:${sha}"
-
-          docker tag "$src" "$REPO:${SERVICE}-${sha}"
-          docker tag "$src" "$REPO:${SERVICE}-latest"
-          docker push "$REPO:${SERVICE}-${sha}"
-          docker push "$REPO:${SERVICE}-latest"
-
-          {
-            echo "### Pushed ${SERVICE} to ECR"
-            echo ""
-            echo "- \`$REPO:${SERVICE}-${sha}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ---------------------------------------------------------------------------
   # 11. Slack notification, always runs
   # ---------------------------------------------------------------------------
@@ -522,8 +395,6 @@ jobs:
       - build
       - image-scan-sbom
       - push-dockerhub
-      - push-acr
-      - push-ecr
     steps:
       - name: Compute pipeline status
         id: status
