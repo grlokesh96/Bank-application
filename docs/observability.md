@@ -1,6 +1,6 @@
 # Observability Architecture
 
-The platform emits **metrics, logs and traces** from every service and unifies
+The platform emits metrics, logs and traces from every service and unifies
 them in Grafana with click-through correlation (metrics → logs → traces).
 
 ## The three signals
