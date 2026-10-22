@@ -268,8 +268,8 @@ velero version --client-only     # Client: v1.18.1
 
 ## Step 3 — Install the Velero server (GitOps, Argo CD app)
 
-> ✅ **Already done if you bootstrapped Argo CD in Phase 4.** `deploy/argocd/apps/velero.yaml`
-> is part of the committed app-of-apps, so the Velero server + node-agents are
+> ✅ **Already done if you bootstrapped Argo CD in Phase 4.** The Velero app is
+> part of the app-of-apps, so the Velero server + node-agents are
 > **already installed** — `kubectl -n velero get pods` shows them Running and
 > `kubectl -n argocd get app velero` is `Synced / Healthy`. **You do not need to
 > re-apply anything here.** Once Step 1's Terraform creates the S3 bucket + IRSA
@@ -277,8 +277,8 @@ velero version --client-only     # Client: v1.18.1
 > can skip straight to Step 2 (CLI) / Step 4 (first backup). The rest of this step
 > is reference for *what* got installed and how to do it manually.
 
-Add `deploy/argocd/apps/velero.yaml` (the app-of-apps picks it up). It installs
-the Velero Helm chart with the **AWS plugin**, **IRSA** (no static keys), and the
+Add the Velero Application (the app-of-apps picks it up). It installs the Velero
+Helm chart with the **AWS plugin**, **IRSA** (no static keys), and the
 **node-agent** for file-system backups:
 
 ```yaml
@@ -341,8 +341,7 @@ spec:
 ```
 
 The `banking` AppProject must **allow the Velero Helm repo AND the `velero`
-namespace destination**. Both are **already committed** in
-`deploy/argocd/bootstrap/project.yaml`:
+namespace destination**. Both are part of the app-of-apps bootstrap project:
 ```yaml
   sourceRepos:
     - "https://vmware-tanzu.github.io/helm-charts"   # ← already present
@@ -350,13 +349,13 @@ namespace destination**. Both are **already committed** in
     - { server: https://kubernetes.default.svc, namespace: velero }   # ← already present
 ```
 > If you edited the project after Argo CD was bootstrapped, re-apply it so the
-> live AppProject picks up the change: `kubectl apply -f deploy/argocd/bootstrap/project.yaml`
+> live AppProject picks up the change: `kubectl apply -f bootstrap/project.yaml`
 > (otherwise the velero app fails with `InvalidSpecError: ... do not match any of
 > the allowed destinations`).
 
 Commit the velero app and let the app-of-apps create it:
 ```bash
-git add deploy/argocd/apps/velero.yaml
+git add bootstrap/velero.yaml
 git commit -m "argocd: add velero backup/DR app"
 git push origin main
 kubectl -n argocd annotate app platform-root argocd.argoproj.io/refresh=hard --overwrite
@@ -422,7 +421,7 @@ velero schedule get
 ```
 Commit the schedule as code (optional, GitOps): export it and add to the repo:
 ```bash
-velero schedule get daily-banking -o yaml > deploy/velero/schedule-daily-banking.yaml
+velero schedule get daily-banking -o yaml > velero/schedule-daily-banking.yaml
 ```
 
 ---

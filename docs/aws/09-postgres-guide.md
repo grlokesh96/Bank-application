@@ -392,7 +392,7 @@ SELECT type, amount, status FROM transaction_transactions ORDER BY created_at DE
 | Host (in-cluster) | `postgres.banking.svc.cluster.local` (or just `postgres` within the namespace) |
 | Port | `5432` |
 | Username | `banking` |
-| Password | `banking` (dev default — [deploy/helm/banking-platform/values.yaml](../../deploy/helm/banking-platform/values.yaml) → `secrets.dbPassword`) |
+| Password | `banking` (dev default — the `POSTGRES_PASSWORD` key of the shared Secret, see [`k8s/01-secret.example.yaml`](../../k8s/01-secret.example.yaml)) |
 | Database | `banking` |
 | Pod | `postgres-0` |
 | Namespace | `banking` |

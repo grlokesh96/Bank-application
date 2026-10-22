@@ -120,7 +120,7 @@ now and outputs its nameservers; the apex ALIAS record is added later in Phase 5
 ## Step 1 — Pick an environment & review variables
 
 For this walkthrough we use **`dev`**. Open
-[terraform/environments/dev/variables.tf](../../terraform/environments/dev/variables.tf).
+`terraform/environments/dev/variables.tf` in the Terraform repository.
 Sensible defaults are set; the ones you might change:
 
 | Knob                  | Default              | What it controls                                     |
@@ -205,14 +205,15 @@ cluster needs the **EBS CSI driver** and a default **gp3** StorageClass. Both ar
 handled for you — **no manual commands**:
 
 - **EBS CSI driver** — the `eks` module installs it as a **managed add-on** with
-  its own IRSA role (`aws-ebs-csi-driver` +
-  [modules/eks/main.tf](../../terraform/modules/eks/main.tf)). It comes up with
-  the cluster on `terraform apply`.
+  its own IRSA role (`aws-ebs-csi-driver` + the `eks` module). It comes up
+  with the cluster on `terraform apply`.
 - **gp3 default StorageClass** — applied via **GitOps** (kept out of Terraform so
-  Terraform stays AWS-only). The `cluster-storage` Argo CD app
-  ([deploy/cluster/storage/](../../deploy/cluster/storage/)) creates `gp3` as the
-  default and un-defaults the EKS-provided `gp2`. It syncs when you bootstrap
-  Argo CD (Phase 4).
+  Terraform stays AWS-only). The `cluster-storage` Argo CD app creates `gp3` as
+  the default and un-defaults the EKS-provided `gp2`. It syncs when you
+  bootstrap Argo CD (Phase 4). The StorageClass manifests themselves are no
+  longer kept in this repository — the platform's own StatefulSets create their
+  PersistentVolumeClaims with the `gp3` class
+  ([`k8s/10-infra.yaml`](../../k8s/10-infra.yaml)).
 
 Verify after the cluster + Argo CD are up:
 ```bash

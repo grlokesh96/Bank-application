@@ -1,6 +1,0 @@
-apiVersion: v2
-name: banking-platform
-description: Umbrella chart that deploys the entire banking platform (all microservices + in-cluster Postgres, Redis, Kafka).
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

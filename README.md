@@ -168,11 +168,12 @@ flowchart TB
   **EKS** (+ EBS CSI add-on), **ECR** (single repo, tag-prefix per service), **S3**,
   **Route 53** (apex zone), and **IAM/IRSA** — state in S3 with native locking.
 - **CI (GitHub Actions).** On push to `main`: build all 32 images in parallel,
-  **Trivy** scan, push to ECR, then bump each service's image tag in
-  `deploy/helm/banking-platform/values.yaml` and commit — **no `helm`/`kubectl` in CI.**
-- **CD (Argo CD + Helm).** Argo CD's **App-of-Apps** renders the umbrella chart
-  and reconciles every layer: the app, cluster storage (gp3), cert-manager,
-  observability, metrics-server, and Velero.
+  **Trivy** scan, then push each image to Docker Hub
+  (`docker.io/lokeshzenbook/banking-platform:<service>-<sha>` and `:latest`) —
+  **no `helm`/`kubectl` in CI.**
+- **CD (plain manifests).** The cluster is reconciled from the plain Kubernetes
+  manifests in [`k8s/`](k8s/) — no Helm chart, no GitOps controller, no
+  templating. `kubectl apply -f k8s/` in dependency order.
 - **Ingress + TLS.** One **AWS NLB** → **Traefik**, path-routed on the single apex
   host; **cert-manager** auto-issues/renews a Let's Encrypt cert (HTTP-01).
 - **Data plane.** REST via the gateway; **gRPC** for internal calls (→ ledger);
@@ -287,10 +288,9 @@ https://vijaygiduthuri.in/alertmanager/ 🚨 Alertmanager
 | Orchestration | **Amazon EKS** (`us-east-1`), managed node group (t3.xlarge) |
 | Ingress / TLS | **AWS NLB → Traefik** + **cert-manager** (Let's Encrypt) |
 | DNS | **Route 53** apex ALIAS (GoDaddy delegates nameservers) |
-| GitOps | **Argo CD** (App-of-Apps) |
-| Packaging | **Helm** umbrella chart (`deploy/helm/banking-platform/`) |
-| IaC | **Terraform** (`terraform/` — vpc, iam, eks, ecr, s3, route53; optional velero) |
-| CI/CD | **GitHub Actions** — matrix build, Trivy scan, ECR push, values bump |
+| Deployment | **Plain Kubernetes manifests** (`k8s/`) — no Helm, no GitOps controller |
+| IaC | Provisioned outside this repo — see [`docs/aws/`](docs/aws/) |
+| CI/CD | **GitHub Actions** — matrix build, Trivy scan, Docker Hub push |
 | Metrics | **Prometheus** (kube-prometheus-stack) + **Grafana** |
 | Logs | **Loki + Promtail** |
 | Traces | **Tempo** via the **OpenTelemetry Collector** (OTLP) |
@@ -310,17 +310,17 @@ banking_application_eks/
 ├── proto/               # protobuf / gRPC contracts (buf)
 ├── frontend/            # React SPA (Vite + nginx)
 ├── build/               # shared service Dockerfile
-├── deploy/
-│   ├── helm/banking-platform/   # umbrella Helm chart (per-service YAML + flat values)
-│   ├── argocd/                  # App-of-Apps: bootstrap/ + apps/ (+ observability/)
-│   ├── cluster/                 # gp3 StorageClass, cert-manager ClusterIssuer
-│   └── observability/           # Prometheus/Grafana/Loki/Tempo/OTel values + dashboards
-├── terraform/
-│   ├── modules/         # vpc · iam · eks · ecr · s3 · route53 · velero
-│   ├── environments/    # dev · qa · prod (dev is used here)
-│   └── velero/          # standalone, optional Velero stack (own state)
-├── docs/aws/            # 01–08 phase-by-phase deployment guides
-├── .github/workflows/   # ci.yaml (build→ECR→bump) · terraform.yaml
+├── k8s/                 # plain Kubernetes manifests, in apply order
+│   ├── 00-namespaces.yaml          # namespaces + the two shared ConfigMaps
+│   ├── 01-secret.example.yaml      # TEMPLATE for the shared Secret
+│   ├── 10-infra.yaml               # Postgres · Redis · Kafka
+│   ├── 20-services.yaml            # 32 Deployments + their Services
+│   ├── 30-hpa.yaml                 # 32 HorizontalPodAutoscalers
+│   ├── 40-ingress.yaml             # Traefik Ingress
+│   ├── 45-tls-clusterissuer.yaml   # Let's Encrypt ClusterIssuer
+│   └── 50-observability.yaml       # ServiceMonitors + Grafana dashboards
+├── docs/aws/            # 01–09 phase-by-phase deployment guides
+├── .github/workflows/   # devsecops.yaml (build → Trivy scan → Docker Hub push)
 └── README.md
 ```
 
@@ -332,21 +332,28 @@ banking_application_eks/
 flowchart LR
     tf[Terraform apply] --> eks[("Amazon EKS")]
     push[git push] --> gha[GitHub Actions]
-    gha --> trivy[Trivy] --> ecr[("Amazon ECR")]
-    ecr --> bump[bump values.yaml] --> commit[commit]
-    commit --> argo[Argo CD auto-sync] --> eks
+    gha --> trivy[Trivy] --> hub[("Docker Hub")]
+    hub --> apply["kubectl apply -f k8s/"] --> eks
 ```
+
+The platform is deployed from the plain manifests in [`k8s/`](k8s/) — see
+[`k8s/README.md`](k8s/README.md) for the apply order, the Secret, the
+datastores and the ingress.
 
 Follow the guides in order — [`docs/aws/`](docs/aws/):
 
 1. **[01](docs/aws/01-terraform-infra.md)** — Terraform: VPC, EKS (+EBS CSI), ECR, S3, Route 53
 2. **[02](docs/aws/02-traefik-ingress.md)** — Traefik ingress (AWS NLB)
-3. **[03](docs/aws/03-github-actions-cicd.md)** — CI/CD → ECR
-4. **[04](docs/aws/04-argocd.md)** — Argo CD App-of-Apps bootstrap
-5. **[05](docs/aws/05-dns-godaddy.md)** — DNS: apex via Route 53 (GoDaddy delegation)
-6. **[06](docs/aws/06-observability.md)** — Prometheus/Grafana/Loki/Tempo/OTel + metrics-server (HPA)
-7. **[07](docs/aws/07-https-tls.md)** — HTTPS/TLS (cert-manager + Let's Encrypt)
-8. **[08](docs/aws/08-velero.md)** — Backup & DR with Velero
+3. **[03](docs/aws/03-github-actions-cicd.md)** — CI/CD → Docker Hub
+4. **[05](docs/aws/05-dns-godaddy.md)** — DNS: apex via Route 53 (GoDaddy delegation)
+5. **[06](docs/aws/06-observability.md)** — Prometheus/Grafana/Loki/Tempo/OTel + metrics-server (HPA)
+6. **[07](docs/aws/07-https-tls.md)** — HTTPS/TLS (cert-manager + Let's Encrypt)
+7. **[08](docs/aws/08-velero.md)** — Backup & DR with Velero
+8. **[09](docs/aws/09-postgres-guide.md)** — Postgres schema, migrations and seed data
+
+> `docs/aws/04-argocd.md` describes the previous GitOps setup. The Argo CD
+> apps have been removed from this repository — see [`k8s/README.md`](k8s/README.md)
+> for how the platform is deployed now.
 
 ---
 

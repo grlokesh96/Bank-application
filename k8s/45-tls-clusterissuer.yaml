@@ -1,0 +1,30 @@
+# Banking Platform — Let's Encrypt ClusterIssuer
+#
+# Cluster-scoped issuer used by the Ingress in 40-ingress.yaml. The
+# cert-manager ingress-shim sees the `cert-manager.io/cluster-issuer`
+# annotation and issues + renews the `banking-tls` Secret automatically.
+#
+# Requires cert-manager to be installed in the cluster (see
+# docs/aws/07-https-tls.md). The HTTP-01 challenge is solved through the
+# Ingress controller, so `vijaygiduthuri.in` must already resolve to this
+# cluster and port 80/443 must be reachable.
+#
+# Skip this file entirely if you are not using cert-manager, and remove
+# the TLS block from 40-ingress.yaml.
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: vijaygiduthuri@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: traefik

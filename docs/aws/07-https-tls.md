@@ -76,14 +76,16 @@ at ~day 75).
 
 Pick one path.
 
-### Option A — Argo CD Application (GitOps) — already committed
+### Option A — Argo CD Application (GitOps)
 
-cert-manager is **already an Application** in the app-of-apps
-([deploy/argocd/apps/cert-manager.yaml](../../deploy/argocd/apps/cert-manager.yaml)),
-and the `banking` AppProject already allows the jetstack repo + `cert-manager`
-namespace (see [bootstrap/project.yaml](../../deploy/argocd/bootstrap/project.yaml)).
-So if you bootstrapped Argo CD in Phase 4, **cert-manager is already installed** —
-no patch, no manual apply.
+cert-manager is an Application in the app-of-apps, and the `banking`
+AppProject allows the jetstack repo + `cert-manager` namespace. So if you
+bootstrapped Argo CD in Phase 4, **cert-manager is already installed** — no
+patch, no manual apply.
+
+> The Argo CD application manifests were removed from this repository together
+> with the rest of `deploy/`. The manifest this page needs is now
+> [`k8s/45-tls-clusterissuer.yaml`](../../k8s/45-tls-clusterissuer.yaml).
 
 Confirm it's healthy:
 ```bash
@@ -151,10 +153,16 @@ kubectl -n cert-manager get pods          # cert-manager (×2), cainjector, webh
 ## Step 2 — Let's Encrypt ClusterIssuer (already GitOps-managed)
 
 The `letsencrypt-prod` ClusterIssuer is **committed**
-([deploy/cluster/cert-manager/clusterissuer.yaml](../../deploy/cluster/cert-manager/clusterissuer.yaml))
-and applied by the `cert-manager-issuer` Argo app — so once Argo CD is
-bootstrapped (Phase 4), it's created automatically (it retries until the
-cert-manager CRDs exist). Just confirm it's ready:
+([`k8s/45-tls-clusterissuer.yaml`](../../k8s/45-tls-clusterissuer.yaml)) and
+applied by the `cert-manager-issuer` Argo app — so once Argo CD is bootstrapped
+(Phase 4), it's created automatically (it retries until the cert-manager CRDs
+exist). Without Argo CD, apply it yourself:
+
+```bash
+kubectl apply -f k8s/45-tls-clusterissuer.yaml
+```
+
+Just confirm it's ready:
 
 ```bash
 kubectl get clusterissuer
@@ -197,16 +205,20 @@ Our app is a standard `Ingress` with a `cert-manager.io/cluster-issuer`
 annotation baked in, so we just toggle values and let Argo + cert-manager do the
 rest — no manual `Certificate`, no auto-sync override.
 
-The chart's `ingress` block in `deploy/helm/banking-platform/values.yaml` is
-**already set to `tls: true`** in the repo:
+The Ingress in [`k8s/40-ingress.yaml`](../../k8s/40-ingress.yaml) is
+**already set up for TLS** in the repo:
 ```yaml
-ingress:
-  enabled: true
-  className: traefik
-  host: vijaygiduthuri.in          # from Phase 5
-  tls: true                         # cert-manager auto-issues banking-tls
-  tlsSecretName: banking-tls
-  clusterIssuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - vijaygiduthuri.in        # from Phase 5
+      secretName: banking-tls     # cert-manager auto-issues this
+  rules:
+    - host: vijaygiduthuri.in
+      # ...
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 ```
 
 > 📌 **You don't need to edit anything here** — because `tls: true` is committed,
@@ -245,7 +257,8 @@ curl -s  "https://${HOSTNAME_APP}/api/v1/fx/rates" | head -c 120; echo
 
 Path-routing these UIs means they must know their sub-path (else assets/links
 break). These keys already exist in
-`deploy/observability/values/kube-prometheus-stack.yaml` — if you did the Phase 6
+[`observability/values/kube-prometheus-stack.yaml`](../../observability/values/kube-prometheus-stack.yaml)
+— if you did the Phase 6
 HTTP access step (doc 06, Step 5a) they're set to `http://`; now that TLS is in
 place, **change the scheme to `https://`** so the browser loads assets over HTTPS
 (a `root_url`/`externalUrl` of `http://` on an HTTPS page causes mixed-content
@@ -273,7 +286,7 @@ Commit → Argo re-syncs the `kube-prometheus-stack` app. (Argo CD itself alread
 serves under `/argocd` from Phase 4's `server.rootpath`.)
 
 ```bash
-git add deploy/observability/values/kube-prometheus-stack.yaml
+git add observability/values/kube-prometheus-stack.yaml
 git commit -m "phase 7: serve grafana/prometheus/alertmanager under sub-paths"
 git push origin main
 kubectl -n argocd annotate app kube-prometheus-stack argocd.argoproj.io/refresh=hard --overwrite

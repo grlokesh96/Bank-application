@@ -40,8 +40,8 @@ GoDaddy (registrar)  --delegate NS-->  Route 53 hosted zone (vijaygiduthuri.in)
                                        Traefik NLB  ->  cluster
 ```
 
-Everything is defined in Terraform ([terraform/modules/route53/](../../terraform/modules/route53/),
-wired into [environments/dev/main.tf](../../terraform/environments/dev/main.tf)).
+Everything is defined in Terraform (`terraform/modules/route53/`, wired into
+`terraform/environments/dev/main.tf`).
 Because the apex record targets the Traefik NLB — which only exists **after**
 Traefik is installed (Phase 2) — the module has a **two-stage** design:
 
@@ -163,12 +163,11 @@ curl -sI -o /dev/null -w "%{http_code}\n" "http://${HOSTNAME_APP}/"
 
 ## Step 5 — Point the chart's Ingress at the apex
 
-Our chart uses a standard Kubernetes **`Ingress`** with a single `host`
-([templates/ingress.yaml](../../deploy/helm/banking-platform/templates/ingress.yaml)),
-so this is a small `values.yaml` edit — no template surgery.
+The platform uses a standard Kubernetes **`Ingress`** with a single `host`
+([`k8s/40-ingress.yaml`](../../k8s/40-ingress.yaml)), so this is a small edit to
+that file — no template surgery.
 
-Open `deploy/helm/banking-platform/values.yaml`, find the `ingress:` block, and
-set it:
+Open `k8s/40-ingress.yaml`, find the `spec:` block, and set it:
 
 ```yaml
 ingress:
@@ -204,9 +203,10 @@ frontend:
 ## Step 6 — Push through the GitOps loop
 
 ```bash
-git add deploy/helm/banking-platform/values.yaml
+git add k8s/40-ingress.yaml
 git commit -m "phase 5: expose the platform on vijaygiduthuri.in"
 git push origin main
+kubectl apply -f k8s/40-ingress.yaml
 ```
 
 Argo CD picks up the commit on its poll (default 3 min). To apply immediately:
@@ -218,9 +218,8 @@ kubectl -n argocd get app banking-platform -w
 # wait for Synced / Healthy, then Ctrl+C
 ```
 
-> Note: our CI `paths:` filter includes `deploy/helm/**`, so this push also
-> triggers a CI run. That's harmless (it rebuilds/re-pushes images and may bump
-> tags); Argo reconciles the final state either way.
+> Note: the CI workflow rebuilds and re-pushes the service images on every
+> push to `main`. That's harmless — the Ingress is applied straight from Git.
 
 ---
 

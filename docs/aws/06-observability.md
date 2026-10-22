@@ -12,7 +12,8 @@ Grafana (click a `trace_id` in a log line → jump to the trace).
 **Time:** ~15 minutes (chart installs + waiting for PVCs to bind).
 
 Full design notes: [docs/observability.md](../observability.md).
-Manifests & values: [deploy/observability/](../../deploy/observability/).
+ServiceMonitors & dashboards: [`k8s/50-observability.yaml`](../../k8s/50-observability.yaml).
+Helm values for the third-party charts: [`observability/`](../../observability/).
 
 ---
 
@@ -90,7 +91,7 @@ Two ways. Pick one.
 ### A) One-shot script (fastest, what we use)
 
 ```bash
-deploy/observability/install.sh
+observability/install.sh
 ```
 
 It creates the namespace, adds the Helm repos, and installs the four charts with
@@ -107,40 +108,42 @@ helm repo update
 
 # metrics + Grafana + Alertmanager (also installs the Prometheus Operator CRDs)
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  -n observability -f deploy/observability/values/kube-prometheus-stack.yaml --wait --timeout 10m
+  -n observability -f observability/values/kube-prometheus-stack.yaml --wait --timeout 10m
 
 # traces
 helm upgrade --install tempo grafana/tempo \
-  -n observability -f deploy/observability/values/tempo.yaml --wait --timeout 5m
+  -n observability -f observability/values/tempo.yaml --wait --timeout 5m
 
 # logs — release name MUST be "loki-stack" (Grafana's Loki datasource URL points
 # at the loki-stack Service; a different release name → 502 / no logs in Grafana)
 helm upgrade --install loki-stack grafana/loki-stack \
-  -n observability -f deploy/observability/values/loki-stack.yaml --wait --timeout 5m
+  -n observability -f observability/values/loki-stack.yaml --wait --timeout 5m
 
 # OTLP ingest
 helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
-  -n observability -f deploy/observability/values/otel-collector.yaml --wait --timeout 5m
+  -n observability -f observability/values/otel-collector.yaml --wait --timeout 5m
 
 # our ServiceMonitor + dashboards (servicemonitor + both dashboard ConfigMaps)
-kubectl apply -f deploy/observability/manifests/
+kubectl apply -f k8s/50-observability.yaml
 ```
 
 > 📌 Install **kube-prometheus-stack first** — it brings the Prometheus Operator
 > CRDs (`ServiceMonitor`, etc.); our `servicemonitor.yaml` fails to apply without
 > them.
 
-### B) GitOps (managed by Argo CD — recommended once Phase 4 is done)
+### B) GitOps (managed by Argo CD — only if you still run Argo CD)
 
-Let Argo CD own the stack so it self-heals. You don't apply these individually —
-the **app-of-apps** root (Phase 4 / [deploy/argocd/](../../deploy/argocd/))
-already creates the observability Applications from
-[deploy/argocd/apps/observability/](../../deploy/argocd/apps/observability/):
-`kube-prometheus-stack`, `loki-stack`, `tempo`, `otel-collector`, and
-`observability-extras` (the ServiceMonitor + dashboards). Each pulls its chart
-from the Helm repo and its values from `deploy/observability/values/*.yaml` — the
-**same files** this script uses. So on a real cluster, bootstrapping Argo CD
-installs observability too; the script below is the non-GitOps fallback.
+Argo CD can own the stack so it self-heals. You don't apply these
+individually — the **app-of-apps** root (Phase 4) creates the observability
+Applications for `kube-prometheus-stack`, `loki-stack`, `tempo`,
+`otel-collector`, and `observability-extras` (the ServiceMonitor + dashboards).
+Each pulls its chart from the Helm repo and its values from
+[`observability/values/`](../../observability/values/) — the **same files** the
+script uses.
+
+> The Argo CD application manifests themselves were removed from this
+> repository together with the rest of `deploy/`. Recreate them if you want
+> this path; the values files they point at are still here.
 
 ---
 
@@ -162,15 +165,14 @@ If anything is `Pending`, jump to Troubleshooting (almost always the `gp3` PVC i
 
 ## Step 3 — Point the platform at the collector
 
-The Helm values file — **`deploy/helm/banking-platform/values.yaml`** (full path
-from the repo root; the `otel:` block is near the top, around line 31) — already
-sets, for **every** service:
+The shared ConfigMap — **`banking-platform-config`** in
+[`k8s/00-namespaces.yaml`](../../k8s/00-namespaces.yaml) — already sets, for
+**every** service:
 
 ```yaml
-otel:
-  enabled: "true"
-  endpoint: "otel-collector.observability.svc.cluster.local:4317"
-  insecure: "true"
+OTEL_ENABLED: "true"
+OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
+OTEL_EXPORTER_OTLP_INSECURE: "true"
 ```
 
 So each service exports **traces** (and OTLP metrics) to the collector, while
@@ -316,7 +318,7 @@ curl -s  http://vijaygiduthuri.in/grafana/api/health         # {"database":"ok",
 > (no TLS yet in Phase 6) and the page renders **blank/broken** — even though
 > `curl` of a single endpoint looks fine. (Alertmanager uses relative asset paths,
 > so it's the exception that works either way.) For HTTP access, these are set to
-> `http://` in `deploy/observability/values/kube-prometheus-stack.yaml`:
+> `http://` in `observability/values/kube-prometheus-stack.yaml`:
 >
 > ```yaml
 > prometheus:
@@ -381,7 +383,7 @@ Explore:
 - **Banking — Service Detail (per service)** dashboard — pick a service from the
   `Service` dropdown to see its **running pods, request rate by status, p50/p95/p99
   latency, CPU, memory, and live Loki logs**, all filtered to that one service.
-  (Provisioned from `deploy/observability/manifests/service-detail-dashboard.yaml`.)
+  (Provisioned from `k8s/50-observability.yaml`.)
 - **Banking Platform — Services** dashboard (fleet-wide request rate, p95, 5xx).
 - Bundled **Kubernetes / Nodes / Pods** dashboards.
 - **Explore → Loki**: click a log line's `trace_id` → it jumps to the trace in
@@ -409,9 +411,8 @@ The chart deploys **HPAs** for every service, but they need the Kubernetes
 metrics-server, HPAs show `cpu: <unknown>/70%` and never scale, and
 `kubectl top` fails.
 
-**GitOps (default):** it's an Argo CD app
-([deploy/argocd/apps/metrics-server.yaml](../../deploy/argocd/apps/metrics-server.yaml)),
-so it installs automatically when you bootstrap Argo CD (Phase 4). Nothing to do.
+**GitOps (default):** it's an Argo CD app, so it installs automatically when you
+bootstrap Argo CD (Phase 4). Nothing to do.
 
 **Manual (non-GitOps) alternative:**
 ```bash

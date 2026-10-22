@@ -1,0 +1,65 @@
+# Banking Platform — namespaces and shared configuration
+#
+# Two namespaces are used:
+#   banking       — the platform itself (32 workloads + Postgres/Redis/Kafka)
+#   observability — Prometheus/Grafana/Loki/Tempo, installed separately
+#                   via Helm (see docs/observability.md)
+#
+# The two ConfigMaps below hold the environment settings that every
+# backend service shares. Services reference them with `envFrom`, so a
+# value that changes for everybody (log level, database host, OTLP
+# endpoint, ...) is edited in exactly one place here instead of in 31
+# Deployments.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: banking
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+---
+# Settings shared by every backend service (all 31 of them, including
+# api-gateway). Per-service settings live in the Deployment itself.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banking-platform-config
+  namespace: banking
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+data:
+  ENVIRONMENT: "development"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  HTTP_PORT: "8080"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+---
+# Datastore + broker settings, shared by the 30 services that use them.
+# api-gateway does not (it only fronts HTTP traffic), so it does not
+# reference this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banking-platform-datastores
+  namespace: banking
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+data:
+  POSTGRES_ENABLED: "true"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "banking"
+  POSTGRES_SSLMODE: "disable"
+  REDIS_ENABLED: "true"
+  REDIS_ADDR: "redis:6379"
+  KAFKA_ENABLED: "true"
+  KAFKA_BROKERS: "kafka:9092"

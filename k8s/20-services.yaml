@@ -1,0 +1,3670 @@
+# Banking Platform — application workloads
+#
+# All 32 workloads: 31 Go microservices plus the React frontend.
+#
+# Every microservice listens on :8080 and exposes /healthz, /readyz and
+# /startupz. auth-service, authz-service, ledger-service and
+# account-service additionally expose gRPC on :9090.
+#
+# api-gateway (:30080) and frontend (:30081) are NodePort services so the
+# platform is reachable on a local kind cluster without an Ingress.
+# Everything else is ClusterIP and is only reachable from inside the
+# cluster.
+#
+# The frontend is the only workload without a securityContext and without
+# the Prometheus scrape annotations: it is an nginx container serving
+# static assets, and the official nginx image runs as root, so
+# `runAsNonRoot` would stop it booting.
+#
+# Image tags point at the `:latest` tag CI publishes. Pin a commit by
+# replacing `<service>-latest` with `<service>-<sha12>`.
+
+# --- account-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service-deployment
+  namespace: banking
+  labels:
+    app: account-service
+    app.kubernetes.io/name: account-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: account-service
+          image: docker.io/lokeshzenbook/banking-platform:account-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: account-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: GRPC_ENABLED
+              value: "true"
+            - name: GRPC_PORT
+              value: "9090"
+            - name: LEDGER_GRPC_ADDR
+              value: "ledger-service:9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: banking
+  labels:
+    app: account-service
+    app.kubernetes.io/name: account-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: account-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+
+# --- admin-service -------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-service-deployment
+  namespace: banking
+  labels:
+    app: admin-service
+    app.kubernetes.io/name: admin-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-service
+  template:
+    metadata:
+      labels:
+        app: admin-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: admin-service
+          image: docker.io/lokeshzenbook/banking-platform:admin-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: admin-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+  namespace: banking
+  labels:
+    app: admin-service
+    app.kubernetes.io/name: admin-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: admin-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- analytics-service ---------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service-deployment
+  namespace: banking
+  labels:
+    app: analytics-service
+    app.kubernetes.io/name: analytics-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: analytics-service
+          image: docker.io/lokeshzenbook/banking-platform:analytics-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: analytics-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  namespace: banking
+  labels:
+    app: analytics-service
+    app.kubernetes.io/name: analytics-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: analytics-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- api-gateway ---------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway-deployment
+  namespace: banking
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: api-gateway
+          image: docker.io/lokeshzenbook/banking-platform:api-gateway-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+          env:
+            - name: SERVICE_NAME
+              value: api-gateway
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: CORS_ALLOWED_ORIGINS
+              value: "*"
+            - name: UPSTREAM_SCHEME
+              value: "http"
+            - name: UPSTREAM_PORT
+              value: "8080"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: banking
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: NodePort
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+
+# --- audit-service -------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service-deployment
+  namespace: banking
+  labels:
+    app: audit-service
+    app.kubernetes.io/name: audit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: audit-service
+          image: docker.io/lokeshzenbook/banking-platform:audit-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: audit-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+  namespace: banking
+  labels:
+    app: audit-service
+    app.kubernetes.io/name: audit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: audit-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- auth-service --------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service-deployment
+  namespace: banking
+  labels:
+    app: auth-service
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: auth-service
+          image: docker.io/lokeshzenbook/banking-platform:auth-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: auth-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: GRPC_ENABLED
+              value: "true"
+            - name: GRPC_PORT
+              value: "9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: banking
+  labels:
+    app: auth-service
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: auth-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+
+# --- authz-service -------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authz-service-deployment
+  namespace: banking
+  labels:
+    app: authz-service
+    app.kubernetes.io/name: authz-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authz-service
+  template:
+    metadata:
+      labels:
+        app: authz-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: authz-service
+          image: docker.io/lokeshzenbook/banking-platform:authz-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: authz-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: GRPC_ENABLED
+              value: "true"
+            - name: GRPC_PORT
+              value: "9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authz-service
+  namespace: banking
+  labels:
+    app: authz-service
+    app.kubernetes.io/name: authz-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: authz-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+
+# --- beneficiary-service -------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beneficiary-service-deployment
+  namespace: banking
+  labels:
+    app: beneficiary-service
+    app.kubernetes.io/name: beneficiary-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beneficiary-service
+  template:
+    metadata:
+      labels:
+        app: beneficiary-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: beneficiary-service
+          image: docker.io/lokeshzenbook/banking-platform:beneficiary-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: beneficiary-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: beneficiary-service
+  namespace: banking
+  labels:
+    app: beneficiary-service
+    app.kubernetes.io/name: beneficiary-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: beneficiary-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- card-service --------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: card-service-deployment
+  namespace: banking
+  labels:
+    app: card-service
+    app.kubernetes.io/name: card-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: card-service
+  template:
+    metadata:
+      labels:
+        app: card-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: card-service
+          image: docker.io/lokeshzenbook/banking-platform:card-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: card-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: card-service
+  namespace: banking
+  labels:
+    app: card-service
+    app.kubernetes.io/name: card-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: card-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- currency-exchange-service -------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currency-exchange-service-deployment
+  namespace: banking
+  labels:
+    app: currency-exchange-service
+    app.kubernetes.io/name: currency-exchange-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: currency-exchange-service
+  template:
+    metadata:
+      labels:
+        app: currency-exchange-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: currency-exchange-service
+          image: docker.io/lokeshzenbook/banking-platform:currency-exchange-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: currency-exchange-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: currency-exchange-service
+  namespace: banking
+  labels:
+    app: currency-exchange-service
+    app.kubernetes.io/name: currency-exchange-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: currency-exchange-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- customer-service ----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-service-deployment
+  namespace: banking
+  labels:
+    app: customer-service
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: customer-service
+  template:
+    metadata:
+      labels:
+        app: customer-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: customer-service
+          image: docker.io/lokeshzenbook/banking-platform:customer-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: customer-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: banking
+  labels:
+    app: customer-service
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: customer-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- document-service ----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-service-deployment
+  namespace: banking
+  labels:
+    app: document-service
+    app.kubernetes.io/name: document-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: document-service
+  template:
+    metadata:
+      labels:
+        app: document-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: document-service
+          image: docker.io/lokeshzenbook/banking-platform:document-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: document-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: S3_BUCKET
+              value: "banking-documents"
+            - name: S3_ENABLED
+              value: "false"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-service
+  namespace: banking
+  labels:
+    app: document-service
+    app.kubernetes.io/name: document-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: document-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- email-service -------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-service-deployment
+  namespace: banking
+  labels:
+    app: email-service
+    app.kubernetes.io/name: email-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: email-service
+  template:
+    metadata:
+      labels:
+        app: email-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: email-service
+          image: docker.io/lokeshzenbook/banking-platform:email-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: email-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-service
+  namespace: banking
+  labels:
+    app: email-service
+    app.kubernetes.io/name: email-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: email-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- emi-service ---------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emi-service-deployment
+  namespace: banking
+  labels:
+    app: emi-service
+    app.kubernetes.io/name: emi-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emi-service
+  template:
+    metadata:
+      labels:
+        app: emi-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: emi-service
+          image: docker.io/lokeshzenbook/banking-platform:emi-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: emi-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emi-service
+  namespace: banking
+  labels:
+    app: emi-service
+    app.kubernetes.io/name: emi-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: emi-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- fixed-deposit-service -----------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixed-deposit-service-deployment
+  namespace: banking
+  labels:
+    app: fixed-deposit-service
+    app.kubernetes.io/name: fixed-deposit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixed-deposit-service
+  template:
+    metadata:
+      labels:
+        app: fixed-deposit-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: fixed-deposit-service
+          image: docker.io/lokeshzenbook/banking-platform:fixed-deposit-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: fixed-deposit-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fixed-deposit-service
+  namespace: banking
+  labels:
+    app: fixed-deposit-service
+    app.kubernetes.io/name: fixed-deposit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: fixed-deposit-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- fraud-service -------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-service-deployment
+  namespace: banking
+  labels:
+    app: fraud-service
+    app.kubernetes.io/name: fraud-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-service
+  template:
+    metadata:
+      labels:
+        app: fraud-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: fraud-service
+          image: docker.io/lokeshzenbook/banking-platform:fraud-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: fraud-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-service
+  namespace: banking
+  labels:
+    app: fraud-service
+    app.kubernetes.io/name: fraud-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: fraud-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- frontend ------------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: banking
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: frontend
+          image: docker.io/lokeshzenbook/banking-platform:frontend-latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: banking
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30081
+
+# --- investment-service --------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: investment-service-deployment
+  namespace: banking
+  labels:
+    app: investment-service
+    app.kubernetes.io/name: investment-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: investment-service
+  template:
+    metadata:
+      labels:
+        app: investment-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: investment-service
+          image: docker.io/lokeshzenbook/banking-platform:investment-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: investment-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: investment-service
+  namespace: banking
+  labels:
+    app: investment-service
+    app.kubernetes.io/name: investment-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: investment-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- kyc-service ---------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc-service-deployment
+  namespace: banking
+  labels:
+    app: kyc-service
+    app.kubernetes.io/name: kyc-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kyc-service
+  template:
+    metadata:
+      labels:
+        app: kyc-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: kyc-service
+          image: docker.io/lokeshzenbook/banking-platform:kyc-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: kyc-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyc-service
+  namespace: banking
+  labels:
+    app: kyc-service
+    app.kubernetes.io/name: kyc-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: kyc-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- ledger-service ------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-service-deployment
+  namespace: banking
+  labels:
+    app: ledger-service
+    app.kubernetes.io/name: ledger-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledger-service
+  template:
+    metadata:
+      labels:
+        app: ledger-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: ledger-service
+          image: docker.io/lokeshzenbook/banking-platform:ledger-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: ledger-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: GRPC_ENABLED
+              value: "true"
+            - name: GRPC_PORT
+              value: "9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-service
+  namespace: banking
+  labels:
+    app: ledger-service
+    app.kubernetes.io/name: ledger-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: ledger-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+
+# --- loan-service --------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-service-deployment
+  namespace: banking
+  labels:
+    app: loan-service
+    app.kubernetes.io/name: loan-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-service
+  template:
+    metadata:
+      labels:
+        app: loan-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: loan-service
+          image: docker.io/lokeshzenbook/banking-platform:loan-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: loan-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: LEDGER_GRPC_ADDR
+              value: "ledger-service:9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-service
+  namespace: banking
+  labels:
+    app: loan-service
+    app.kubernetes.io/name: loan-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: loan-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- notification-service ------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service-deployment
+  namespace: banking
+  labels:
+    app: notification-service
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: notification-service
+          image: docker.io/lokeshzenbook/banking-platform:notification-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: notification-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: banking
+  labels:
+    app: notification-service
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: notification-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- payment-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service-deployment
+  namespace: banking
+  labels:
+    app: payment-service
+    app.kubernetes.io/name: payment-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: payment-service
+          image: docker.io/lokeshzenbook/banking-platform:payment-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: payment-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: LEDGER_GRPC_ADDR
+              value: "ledger-service:9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: banking
+  labels:
+    app: payment-service
+    app.kubernetes.io/name: payment-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: payment-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- profile-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profile-service-deployment
+  namespace: banking
+  labels:
+    app: profile-service
+    app.kubernetes.io/name: profile-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: profile-service
+  template:
+    metadata:
+      labels:
+        app: profile-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: profile-service
+          image: docker.io/lokeshzenbook/banking-platform:profile-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: profile-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: profile-service
+  namespace: banking
+  labels:
+    app: profile-service
+    app.kubernetes.io/name: profile-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: profile-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- recurring-deposit-service -------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recurring-deposit-service-deployment
+  namespace: banking
+  labels:
+    app: recurring-deposit-service
+    app.kubernetes.io/name: recurring-deposit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: recurring-deposit-service
+  template:
+    metadata:
+      labels:
+        app: recurring-deposit-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: recurring-deposit-service
+          image: docker.io/lokeshzenbook/banking-platform:recurring-deposit-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: recurring-deposit-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recurring-deposit-service
+  namespace: banking
+  labels:
+    app: recurring-deposit-service
+    app.kubernetes.io/name: recurring-deposit-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: recurring-deposit-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- reports-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reports-service-deployment
+  namespace: banking
+  labels:
+    app: reports-service
+    app.kubernetes.io/name: reports-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reports-service
+  template:
+    metadata:
+      labels:
+        app: reports-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: reports-service
+          image: docker.io/lokeshzenbook/banking-platform:reports-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: reports-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reports-service
+  namespace: banking
+  labels:
+    app: reports-service
+    app.kubernetes.io/name: reports-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: reports-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- search-service ------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-service-deployment
+  namespace: banking
+  labels:
+    app: search-service
+    app.kubernetes.io/name: search-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-service
+  template:
+    metadata:
+      labels:
+        app: search-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: search-service
+          image: docker.io/lokeshzenbook/banking-platform:search-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: search-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-service
+  namespace: banking
+  labels:
+    app: search-service
+    app.kubernetes.io/name: search-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: search-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- sms-service ---------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sms-service-deployment
+  namespace: banking
+  labels:
+    app: sms-service
+    app.kubernetes.io/name: sms-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sms-service
+  template:
+    metadata:
+      labels:
+        app: sms-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: sms-service
+          image: docker.io/lokeshzenbook/banking-platform:sms-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: sms-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sms-service
+  namespace: banking
+  labels:
+    app: sms-service
+    app.kubernetes.io/name: sms-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: sms-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- statement-service ---------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statement-service-deployment
+  namespace: banking
+  labels:
+    app: statement-service
+    app.kubernetes.io/name: statement-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: statement-service
+  template:
+    metadata:
+      labels:
+        app: statement-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: statement-service
+          image: docker.io/lokeshzenbook/banking-platform:statement-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: statement-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statement-service
+  namespace: banking
+  labels:
+    app: statement-service
+    app.kubernetes.io/name: statement-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: statement-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- support-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: support-service-deployment
+  namespace: banking
+  labels:
+    app: support-service
+    app.kubernetes.io/name: support-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: support-service
+  template:
+    metadata:
+      labels:
+        app: support-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: support-service
+          image: docker.io/lokeshzenbook/banking-platform:support-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: support-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: support-service
+  namespace: banking
+  labels:
+    app: support-service
+    app.kubernetes.io/name: support-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: support-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- transaction-service -------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-service-deployment
+  namespace: banking
+  labels:
+    app: transaction-service
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-service
+  template:
+    metadata:
+      labels:
+        app: transaction-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: transaction-service
+          image: docker.io/lokeshzenbook/banking-platform:transaction-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: transaction-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+            - name: LEDGER_GRPC_ADDR
+              value: "ledger-service:9090"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  namespace: banking
+  labels:
+    app: transaction-service
+    app.kubernetes.io/name: transaction-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- wallet-service ------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-service-deployment
+  namespace: banking
+  labels:
+    app: wallet-service
+    app.kubernetes.io/name: wallet-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wallet-service
+  template:
+    metadata:
+      labels:
+        app: wallet-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: wallet-service
+          image: docker.io/lokeshzenbook/banking-platform:wallet-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: wallet-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wallet-service
+  namespace: banking
+  labels:
+    app: wallet-service
+    app.kubernetes.io/name: wallet-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: wallet-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

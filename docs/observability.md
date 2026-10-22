@@ -30,9 +30,9 @@ them in Grafana with click-through correlation (metrics → logs → traces).
 - Every service runs Prometheus middleware (`pkg/httpserver`) exposing
   `/metrics`: `http_requests_total`, `http_request_duration_seconds`, and Go
   runtime metrics.
-- A `ServiceMonitor` (`deploy/observability/servicemonitor.yaml`) selects all
-  services labelled `app.kubernetes.io/part-of=banking-platform`; Prometheus
-  (kube-prometheus-stack) scrapes them every 15s.
+- A `ServiceMonitor` ([`k8s/50-observability.yaml`](../k8s/50-observability.yaml))
+  selects all services labelled `app.kubernetes.io/part-of=banking-platform`;
+  Prometheus (kube-prometheus-stack) scrapes them every 15s.
 - Services also export OTLP metrics to the Collector, which re-exposes them for
   Prometheus (secondary path).
 
@@ -59,11 +59,26 @@ them in Grafana with click-through correlation (metrics → logs → traces).
 
 ## Install (kind or EKS)
 ```bash
-deploy/observability/install.sh          # installs the 4 charts + ServiceMonitors + dashboard
-# then enable OTLP export in the platform:
-helm upgrade banking deploy/helm/banking-platform -n banking \
-  -f deploy/helm/banking-platform/values-dev.yaml   # OTEL_ENABLED=true, endpoint=otel-collector
+# 1. the observability stack — Prometheus, Grafana, Alertmanager, Loki, Tempo
+#    and the OTel Collector, from their upstream Helm charts:
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo update
+
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n observability --wait
+helm upgrade --install tempo   grafana/tempo   -n observability --wait
+helm upgrade --install loki-stack grafana/loki-stack -n observability --wait
+helm upgrade --install otel-collector open-telemetry/opentelemetry-collector -n observability --wait
+
+# 2. the ServiceMonitors and the Grafana dashboards for this platform:
+kubectl apply -f k8s/50-observability.yaml
 ```
+
+OTLP export is already enabled in the platform — `OTEL_ENABLED=true` and
+`OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector.observability.svc.cluster.local:4317`
+live in the shared `banking-platform-config` ConfigMap
+([`k8s/00-namespaces.yaml`](../k8s/00-namespaces.yaml)).
 
 Grafana: `admin` / `admin` (dev). Dashboards: the kube-prometheus-stack bundle
 (cluster/nodes/pods) plus **Banking Platform — Services** (request rate, p95

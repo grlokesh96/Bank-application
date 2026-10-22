@@ -1,0 +1,51 @@
+# Banking Platform — ingress
+#
+# Single host with path-based routing:
+#   /api  -> api-gateway
+#   /     -> frontend
+#
+# Two ways to reach the platform:
+#   - kind / local cluster: use the NodePorts directly
+#     http://localhost:30080  (api-gateway)
+#     http://localhost:30081  (frontend)
+#   - a cluster with an Ingress controller: apply this file.
+#
+# The `ingressClassName` below targets Traefik. Change it to `nginx` if
+# that is what your cluster runs. The TLS block needs cert-manager and
+# the ClusterIssuer from 45-tls-clusterissuer.yaml — remove both the
+# `tls:` block and the `cert-manager.io/cluster-issuer` annotation if you
+# are not using cert-manager.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: banking-platform
+  namespace: banking
+  labels:
+    app.kubernetes.io/part-of: banking-platform
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - vijaygiduthuri.in
+      secretName: banking-tls
+  rules:
+    - host: vijaygiduthuri.in
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 8080

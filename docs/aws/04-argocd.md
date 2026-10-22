@@ -1,7 +1,11 @@
 # Phase 4 — Deploy the Banking Platform with Argo CD (EKS)
 
-> **Status:** ✅ Written *as we do it* on the EKS cluster. Reflects the exact
-> commands that work, not a theoretical guide.
+> **Status:** 🗄️ **Archived.** The Argo CD applications and the Helm chart this
+> guide bootstraps have been removed from this repository — the platform is now
+> deployed from the plain manifests in [`k8s/`](../../k8s/) (see
+> [`k8s/README.md`](../../k8s/README.md)). This guide is kept for reference:
+> it still describes how Argo CD is wired up on the cluster, and the YAML
+> excerpts below are the ones that were committed under `deploy/argocd/`.
 
 **Goal:** Move the platform from a manual `helm install` to a GitOps loop where
 **every push to `main` ends up in the cluster automatically**. After this phase:
@@ -27,7 +31,7 @@ once it's set up.
 | ---- | ------------ |
 | EKS cluster reachable from kubectl | `kubectl config current-context` returns the cluster ARN |
 | Traefik installed (namespace `traefik`) | `kubectl -n traefik get svc traefik` shows an EXTERNAL-IP (NLB hostname) |
-| CI pushes images to ECR & bumps `deploy/helm/banking-platform/values.yaml` | a recent `main` commit by `banking-ci[bot]` titled `ci(gitops): bump image tags to <sha>` |
+| CI pushes the service images | `docker pull docker.io/<username>/banking-platform/account-service-latest` succeeds |
 | `helm` v3 + `kubectl` locally | `helm version`, `kubectl version --client` |
 | EBS CSI driver + default `gp3` StorageClass | `kubectl get sc` shows `gp3 (default)` (Phase 1 Step 4) |
 
@@ -211,24 +215,26 @@ kubectl -n argocd get secret banking-repo \
 
 ## Step 5 — Bootstrap GitOps (app-of-apps)
 
-These manifests are **committed** under [deploy/argocd/](../../deploy/argocd/)
-(see its [README](../../deploy/argocd/README.md)). We use the **app-of-apps**
-pattern: you apply two bootstrap files once, and a root Application creates
-everything else (`banking-platform`, `cert-manager`, and the observability apps)
-from `deploy/argocd/apps/`.
+These manifests used to be **committed** under `deploy/argocd/`. That directory
+has been removed from this repository together with the Helm chart it pointed
+at. We use the **app-of-apps** pattern: you apply two bootstrap files once, and
+a root Application creates everything else (`banking-platform`, `cert-manager`,
+and the observability apps). The YAML for those files is reproduced below, so
+you can recreate them if you want to run Argo CD alongside the plain
+manifests.
 
 ### 5a — Repo URL (already set)
 
-Every Application already points at
-`https://github.com/vijaygiduthuri/banking_application_eks.git` (committed under
-`deploy/argocd/`). Nothing to edit — just make sure Argo CD has read credentials
-for it (Step 4) if the repo is private.
+Every Application points at
+`https://github.com/vijaygiduthuri/banking_application_eks.git`. Nothing to edit
+— just make sure Argo CD has read credentials for it (Step 4) if the repo is
+private.
 
 ### 5b — Apply the two bootstrap files
 
 ```bash
-kubectl apply -f deploy/argocd/bootstrap/project.yaml    # AppProject "banking"
-kubectl apply -f deploy/argocd/bootstrap/root-app.yaml   # app-of-apps root
+kubectl apply -f bootstrap/project.yaml    # AppProject "banking"  (copy from below)
+kubectl apply -f bootstrap/root-app.yaml   # app-of-apps root     (copy from below)
 
 kubectl -n argocd get applications
 # platform-root, cluster-storage, metrics-server, banking-platform, cert-manager, cert-manager-issuer,
@@ -284,10 +290,9 @@ spec:
   source:
     repoURL: ${REPO_URL}
     targetRevision: ${REVISION}
-    path: deploy/helm/banking-platform
-    helm:
-      valueFiles:
-        - values.yaml
+    path: k8s                       # plain manifests — no chart, no templating
+    directory:
+      recurse: true
   destination:
     server: https://kubernetes.default.svc
     namespace: banking
@@ -436,10 +441,8 @@ kubectl describe application <app> -n argocd | sed -n '/Status:/,$p'
 ```
  1. edit any service (e.g. add a comment)
  2. git push origin main
- 3. .github/workflows/ci.yaml runs
-       → build → Trivy scan → push to ECR  banking-platform:<service>-<sha>
-       → update-gitops rewrites deploy/helm/banking-platform/values.yaml
-       → commits & pushes as banking-ci[bot]  ("ci(gitops): bump image tags to <sha> [skip ci]")
+ 3. .github/workflows/devsecops.yaml runs
+       → build → Trivy scan → push to Docker Hub  <service>-<sha> / <service>-latest
  4. Argo CD poller (default 3 min) sees the commit  — or click "Refresh" in the UI
  5. Argo diffs cluster vs git, sees new image tags → OutOfSync
  6. selfHeal=true → Argo applies the new spec → kubelet rolls the pods

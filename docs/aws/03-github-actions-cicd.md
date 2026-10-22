@@ -4,17 +4,25 @@
 > IAM / repo config that make it run.
 
 **Goal:** On every push to `main`, **build → scan → push** all service images to
-a single **Amazon ECR** repository, then bump the per-service image tags in the
-Helm `values.yaml` and commit that back. **Argo CD (Phase 4) does the deploy** —
+a single **Amazon ECR** repository. **Argo CD (Phase 4) does the deploy** —
 this pipeline never runs `helm` or `kubectl`.
+
+> **Note (repository state as of today).** The pipeline that lives in this
+> repository now lives in
+> [`.github/workflows/devsecops.yaml`](../../.github/workflows/devsecops.yaml):
+> it builds and Trivy-scans every service image and pushes it to **Docker Hub**
+> (`docker.io/<username>/banking-platform:<service>-<sha>` and `:latest`).
+> There is **no GitOps bump job** any more — the image tags live directly in
+> the plain manifests under [`k8s/`](../../k8s/). The rest of this guide
+> documents the original ECR-based pipeline, which is still accurate for the
+> ECR repository, IAM user and secret setup.
 
 **Time:** ~10 minutes to configure (IAM user + repo secrets); builds run on push.
 
-Workflow files:
-[.github/workflows/ci.yaml](../../.github/workflows/ci.yaml) (build/scan/push +
-GitOps bump) and
-[.github/workflows/terraform.yaml](../../.github/workflows/terraform.yaml)
-(`fmt`/`validate` for the Terraform).
+Workflow file:
+[.github/workflows/devsecops.yaml](../../.github/workflows/devsecops.yaml)
+(build/scan/push). The Terraform `fmt`/`validate` workflow lives in the
+Terraform repository.
 
 ---
 
@@ -43,12 +51,7 @@ push to main
    │             <acct>.dkr.ecr.<region>.amazonaws.com/banking-platform:<service>-<sha>
    │             …:<service>-latest
    │
-   └─ update-gitops   (main only, after ALL builds pass)
-        yq sets <service>.image in deploy/helm/banking-platform/values.yaml
-           → git commit "ci(gitops): bump image tags … [skip ci]"
-                     │
-                     ▼
-              Argo CD detects the commit → syncs → EKS
+   └─ (today: push to Docker Hub, no version bump — the image tags live in k8s/)
 ```
 
 ---
@@ -141,20 +144,16 @@ Image naming — single repo, tag-prefix per service:
 
 ## Step 4 — How the `update-gitops` job works
 
-Runs once, after **all** builds pass, on `main` only:
+This job no longer exists. It used to run once after **all** builds passed, on
+`main` only, and it rewrote the image tag of every service in the Helm
+`values.yaml` so that Argo CD would pick the new images up.
 
-1. Maps each service dir → camelCase values key (`auth-service` → `authService`)
-   with a small `to_camel` bash helper.
-2. `yq -i` sets `.<key>.image` in `deploy/helm/banking-platform/values.yaml` to
-   the new `…:<service>-<sha>`.
-3. Commits `ci(gitops): bump image tags to <sha> [skip ci]` and pushes to `main`.
-
-The `[skip ci]` marker stops the bump commit from re-triggering the pipeline.
-Argo CD renders the chart from this `values.yaml`, so **the commit is the deploy
-trigger**.
-
-> If branch protection rejects the default token's push, add the `GITOPS_TOKEN`
-> PAT (Step 2) — the checkout uses `secrets.GITOPS_TOKEN || secrets.GITHUB_TOKEN`.
+Today there is nothing to bump: the tags are written directly in the
+manifests under [`k8s/`](../../k8s/), and the images are published to Docker
+Hub as `<service>-<sha>` and `<service>-latest`. To pin a rollout to a specific
+build, edit the `image:` line of that service in
+[`k8s/20-services.yaml`](../../k8s/20-services.yaml) and re-apply:
+`kubectl apply -f k8s/`.
 
 ---
 
