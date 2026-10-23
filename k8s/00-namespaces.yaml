@@ -1,15 +1,17 @@
+
 # Banking Platform — namespaces and shared configuration
 #
-# Two namespaces are used:
-#   banking       — the platform itself (32 workloads + Postgres/Redis/Kafka)
-#   observability — Prometheus/Grafana/Loki/Tempo, installed separately
-#                   via Helm (see docs/observability.md)
+# Namespaces:
+#   banking       — banking platform workloads and datastores
+#   observability — monitoring and tracing stack, installed separately
 #
-# The two ConfigMaps below hold the environment settings that every
-# backend service shares. Services reference them with `envFrom`, so a
-# value that changes for everybody (log level, database host, OTLP
-# endpoint, ...) is edited in exactly one place here instead of in 31
-# Deployments.
+# Shared ConfigMaps centralize common environment variables.
+# Reference them from Deployments using envFrom.
+#
+# IMPORTANT:
+# Store passwords, tokens, and other credentials in Kubernetes Secrets
+# or an external secrets manager, not in ConfigMaps.
+
 ---
 apiVersion: v1
 kind: Namespace
@@ -17,6 +19,7 @@ metadata:
   name: banking
   labels:
     app.kubernetes.io/part-of: banking-platform
+
 ---
 apiVersion: v1
 kind: Namespace
@@ -24,9 +27,10 @@ metadata:
   name: observability
   labels:
     app.kubernetes.io/part-of: banking-platform
+
 ---
-# Settings shared by every backend service (all 31 of them, including
-# api-gateway). Per-service settings live in the Deployment itself.
+# Common settings for backend services.
+# Override service-specific values in individual Deployments when needed.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -42,10 +46,10 @@ data:
   OTEL_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
   OTEL_EXPORTER_OTLP_INSECURE: "true"
+
 ---
-# Datastore + broker settings, shared by the 30 services that use them.
-# api-gateway does not (it only fronts HTTP traffic), so it does not
-# reference this ConfigMap.
+# Shared datastore and message-broker settings.
+# Only services that require these dependencies should reference this ConfigMap.
 apiVersion: v1
 kind: ConfigMap
 metadata:
