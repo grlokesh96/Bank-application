@@ -22,7 +22,7 @@ metadata:
     app.kubernetes.io/part-of: banking-platform
 spec:
   serviceName: postgres
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: postgres
