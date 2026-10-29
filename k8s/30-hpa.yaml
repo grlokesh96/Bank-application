@@ -51,7 +51,7 @@ spec:
     kind: Deployment
     name: admin-service-deployment
   minReplicas: 1
-  maxReplicas: 5
+  maxReplicas: 10
   metrics:
     - type: Resource
       resource:
