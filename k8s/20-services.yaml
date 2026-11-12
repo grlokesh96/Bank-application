@@ -156,7 +156,7 @@ metadata:
     app.kubernetes.io/name: admin-service
     app.kubernetes.io/part-of: banking-platform
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: admin-service
