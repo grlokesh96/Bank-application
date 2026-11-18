@@ -64,7 +64,7 @@ spec:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 80
+          averageUtilization: 70
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
