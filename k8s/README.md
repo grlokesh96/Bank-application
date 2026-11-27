@@ -5,14 +5,15 @@ Terraform — just YAML you can read end to end and `kubectl apply` in order.
 
 ```
 k8s/
-├── 00-namespaces.yaml            namespaces + the two shared ConfigMaps
-├── 01-secret.example.yaml        TEMPLATE for the shared Secret (never commit it)
-├── 10-infra.yaml                 Postgres, Redis, Kafka
-├── 20-services.yaml              32 Deployments + their Services
-├── 30-hpa.yaml                   32 HorizontalPodAutoscalers
-├── 40-ingress.yaml               Traefik Ingress for vijaygiduthuri.in
-├── 45-tls-clusterissuer.yaml     Let's Encrypt ClusterIssuer (cert-manager)
-└── 50-observability.yaml         Prometheus ServiceMonitors + Grafana dashboards
+├── namespace.yaml           # Namespaces + shared ConfigMaps
+├── secret.example.yaml      # Template for shared Secret (never commit real values)
+├── infra.yaml               # Postgres, Redis, Kafka (StatefulSets + Services)
+├── services/                # All microservices (Deployments + Services)
+│   └── 20-services.yaml     # Monolithic file (being split in separate PR)
+├── hpa.yaml                 # HorizontalPodAutoscalers for all workloads
+├── ingress.yaml             # Traefik Ingress + path routing
+├── tls-clusterissuer.yaml   # Let's Encrypt ClusterIssuer (cert-manager)
+└── observability.yaml       # Prometheus ServiceMonitors + Grafana dashboards
 ```
 
 The numbering is the apply order. `kubectl apply -f k8s/` already applies
