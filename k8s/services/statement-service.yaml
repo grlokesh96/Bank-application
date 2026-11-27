@@ -1,0 +1,139 @@
+# Banking Platform — application workloads
+#
+# All 32 workloads: 31 Go microservices plus the React frontend.
+#
+# Every microservice listens on :8080 and exposes /healthz, /readyz and
+# /startupz. auth-service, authz-service, ledger-service and
+# account-service additionally expose gRPC on :9090.
+#
+# api-gateway (:30080) and frontend (:30081) are NodePort services so the
+# platform is reachable on a local kind cluster without an Ingress.
+# Everything else is ClusterIP and is only reachable from inside the
+# cluster.
+#
+# The frontend is the only workload without a securityContext and without
+# the Prometheus scrape annotations: it is an nginx container serving
+# static assets, and the official nginx image runs as root, so
+# `runAsNonRoot` would stop it booting.
+#
+# Image tags point at the `:latest` tag CI publishes. Pin a commit by
+# replacing `<service>-latest` with `<service>-<sha12>`.
+
+# --- account-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+
+  name: statement-service-deployment
+  namespace: banking
+  labels:
+    app: statement-service
+    app.kubernetes.io/name: statement-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: statement-service
+  template:
+    metadata:
+      labels:
+        app: statement-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: statement-service
+          image: docker.io/lokeshzenbook/banking-platform:statement-service-latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: banking-platform-config
+            - configMapRef:
+                name: banking-platform-datastores
+          env:
+            - name: SERVICE_NAME
+              value: statement-service
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_SECRET
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-platform-secrets
+                  key: JWT_ISSUER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: 8080
+            failureThreshold: 40
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statement-service
+  namespace: banking
+  labels:
+    app: statement-service
+    app.kubernetes.io/name: statement-service
+    app.kubernetes.io/part-of: banking-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: statement-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+# --- support-service -----------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
